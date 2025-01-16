@@ -13,6 +13,7 @@ class P2PTracker:
         self.server_socket.listen(10)  # Permite até 10 conexões simultâneas
         self.server_socket.settimeout(60)  # Timeout de 60 segundos
         self.total_bytes_received = 0
+        self.total_bytes_sent = 0
         print(f"Tracker iniciado em {host}:{port}")
 
     def add_user(self, user_id, ip, resources):
@@ -58,6 +59,7 @@ class P2PTracker:
                     break
 
                 self.total_bytes_received += len(data)
+                print(f"Bytes recebidos nesta requisição: {len(data)}")
                 message = json.loads(data.decode('utf-8'))
                 user_id = message.get("user_id")
                 action = message.get("action")
@@ -65,19 +67,30 @@ class P2PTracker:
                 if action == "register":
                     resources = message.get("resources", [])
                     self.add_user(user_id, addr[0], resources)
-                    conn.sendall(b"Registered successfully")
+                    response = b"Registered successfully"
+                    conn.sendall(response)
+                    self.total_bytes_sent += len(response)
+                    print(f"Bytes enviados nesta requisição: {len(response)}")
 
                 elif action == "keep_alive":
                     self.update_last_seen(user_id)
-                    conn.sendall(b"Keep-alive acknowledged")
+                    response = b"Keep-alive acknowledged"
+                    conn.sendall(response)
+                    self.total_bytes_sent += len(response)
+                    print(f"Bytes enviados nesta requisição: {len(response)}")
 
                 elif action == "get_active_users":
                     with self.lock:
                         response = {
                             "active_users": self.active_users,
                             "total_bytes_received": self.total_bytes_received,
+                            "total_bytes_sent": self.total_bytes_sent,
                         }
-                    conn.sendall(json.dumps(response).encode('utf-8'))
+                    response_data = json.dumps(response).encode('utf-8')
+                    conn.sendall(response_data)
+                    self.total_bytes_sent += len(response_data)
+                    print(f"Bytes enviados nesta requisição: {
+                          len(response_data)}")
 
         except BrokenPipeError:
             print(f"Conexão com {addr} interrompida (BrokenPipeError).")

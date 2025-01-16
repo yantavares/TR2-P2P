@@ -16,8 +16,12 @@ def simulate_user(user_id, resources, action_interval=10):
                 "action": "register",
                 "resources": resources
             }
-            client_socket.sendall(json.dumps(register_message).encode('utf-8'))
-            print(client_socket.recv(4096).decode('utf-8'))
+            request_data = json.dumps(register_message).encode('utf-8')
+            client_socket.sendall(request_data)
+            print(f"Bytes enviados nesta requisição: {len(request_data)}")
+            response = client_socket.recv(4096)
+            print(f"Bytes recebidos nesta requisição: {len(response)}")
+            print(response.decode('utf-8'))
 
             while True:
                 time.sleep(action_interval)
@@ -27,19 +31,25 @@ def simulate_user(user_id, resources, action_interval=10):
                     "user_id": user_id,
                     "action": "keep_alive"
                 }
-                client_socket.sendall(json.dumps(
-                    keep_alive_message).encode('utf-8'))
-                print(client_socket.recv(4096).decode('utf-8'))
+                request_data = json.dumps(keep_alive_message).encode('utf-8')
+                client_socket.sendall(request_data)
+                print(f"Bytes enviados nesta requisição: {len(request_data)}")
+                response = client_socket.recv(4096)
+                print(f"Bytes recebidos nesta requisição: {len(response)}")
+                print(response.decode('utf-8'))
 
                 # Solicita lista de usuários ativos
                 get_users_message = {
                     "user_id": user_id,
                     "action": "get_active_users"
                 }
-                client_socket.sendall(json.dumps(
-                    get_users_message).encode('utf-8'))
-                response = client_socket.recv(4096).decode('utf-8')
-                print(f"Usuário {user_id} recebeu lista de ativos: {response}")
+                request_data = json.dumps(get_users_message).encode('utf-8')
+                client_socket.sendall(request_data)
+                print(f"Bytes enviados nesta requisição: {len(request_data)}")
+                response = client_socket.recv(4096)
+                print(f"Bytes recebidos nesta requisição: {len(response)}")
+                print(f"Usuário {user_id} recebeu lista de ativos: {
+                      response.decode('utf-8')}")
 
         except (ConnectionError, BrokenPipeError):
             print(f"Reconectando usuário {user_id}...")
