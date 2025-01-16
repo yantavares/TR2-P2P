@@ -3,7 +3,7 @@ import { getActiveUsers } from "../../requests";
 import { useEffect, useState } from "react";
 import { User } from "../../types";
 
-export const FileHandler = ({ userId }: { userId: number }) => {
+export const FileHandler = ({ userId }: { userId: string }) => {
   const [response, setResponse] = useState<AxiosResponse | null>(null);
   const [resources, setResources] = useState<string[]>([]);
   const [onlineUsers, setOnlineUsers] = useState<number>(0);

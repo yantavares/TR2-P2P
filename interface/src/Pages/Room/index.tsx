@@ -2,11 +2,9 @@ import { useNavigate } from "react-router-dom";
 import Chat from "../../Components/Chat";
 import FileHandler from "../../Components/FileHandler";
 import { sendKeepAlive } from "../../requests";
-import { User } from "../../types";
 
 const Room = () => {
   const navigate = useNavigate();
-  // Get user id from query param (?user_id=x)
   const urlParams = new URLSearchParams(window.location.search);
   const userId = urlParams.get("user_id");
 

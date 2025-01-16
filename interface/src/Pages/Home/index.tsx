@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { registerUser } from "../../requests";
 import { User } from "../../types";
 
@@ -19,7 +19,10 @@ const mockUsers = [
 
 const Home = () => {
   const navigate = useNavigate();
-  const { userId } = useParams<{ userId: string }>();
+  let { userId } = useParams<{ userId: string }>();
+  if (!userId) {
+    userId = "0";
+  }
   const handleConnect = async (user: User) => {
     try {
       const response = await registerUser(user.id, user.resources);
@@ -45,7 +48,7 @@ const Home = () => {
           peeers, chat and send files.
         </p>
         <div>
-          <button onClick={() => handleConnect(mockUsers[userId])}>
+          <button onClick={() => handleConnect(mockUsers[Number(userId)])}>
             Connect!
           </button>
         </div>

@@ -1,4 +1,4 @@
-export const Chat = ({ userId }: { userId: number }) => {
+export const Chat = ({ userId }: { userId: string }) => {
   return (
     <div style={{ width: "50%" }}>
       <h2>Chat - {userId}</h2>

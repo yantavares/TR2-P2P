@@ -20,6 +20,9 @@ export async function sendKeepAlive(userId: string) {
   const response = await axios.post(`${TRACKER_URL}/keep_alive`, {
     user_id: userId,
   });
+  if (response.status === 200) {
+    console.log("Keep alive aknowledged.");
+  }
   console.log(response.data);
 }
 
