@@ -1,40 +1,45 @@
+import socket
 import threading
 import time
-import random
+import json
 
 
 class P2PTracker:
-    def __init__(self):
-        self.active_users = {}  # {user_id: {"resources": list, "last_seen": timestamp}}
+    def __init__(self, host="0.0.0.0", port=5000):
+        self.active_users = {}  # {user_id: {"ip": ip, "resources": list, "last_seen": timestamp}}
         self.lock = threading.Lock()
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.bind((host, port))
+        self.server_socket.listen(10)  # Permite até 10 conexões simultâneas
+        self.server_socket.settimeout(60)  # Timeout de 60 segundos
+        self.total_bytes_received = 0
+        print(f"Tracker iniciado em {host}:{port}")
 
-    def add_user(self, user_id, resources):
-        """Adiciona um usuário à lista de usuários ativos."""
+    def add_user(self, user_id, ip, resources):
         with self.lock:
             self.active_users[user_id] = {
+                "ip": ip,
                 "resources": resources,
                 "last_seen": time.time(),
             }
-            print(f"Usuário {user_id} adicionado com recursos: {resources}")
+            print(f"Usuário {user_id} conectado com IP {
+                  ip} e recursos: {resources}")
 
     def remove_user(self, user_id):
-        """Remove um usuário da lista de ativos."""
         with self.lock:
             if user_id in self.active_users:
                 del self.active_users[user_id]
                 print(f"Usuário {user_id} removido da lista ativa.")
 
     def update_last_seen(self, user_id):
-        """Atualiza o timestamp de último contato de um usuário."""
         with self.lock:
             if user_id in self.active_users:
                 self.active_users[user_id]["last_seen"] = time.time()
                 print(f"Keep-alive recebido de {user_id}.")
 
     def check_inactive_users(self):
-        """Remove usuários inativos da lista de ativos."""
         while True:
-            time.sleep(30)  # Executa a cada 30 segundos
+            time.sleep(30)
             with self.lock:
                 current_time = time.time()
                 inactive_users = [
@@ -45,54 +50,60 @@ class P2PTracker:
                 for user_id in inactive_users:
                     self.remove_user(user_id)
 
-    def get_active_users(self):
-        """Retorna a lista de usuários ativos."""
-        with self.lock:
-            return {
-                user_id: data["resources"] for user_id, data in self.active_users.items()
-            }
+    def handle_client(self, conn, addr):
+        try:
+            while True:
+                data = conn.recv(4096)  # Buffer maior para evitar truncamento
+                if not data:
+                    break
 
-    def simulate_user_activity(self, user_id):
-        """Simula atividade de um usuário enviando keep-alive periodicamente."""
-        while user_id in self.active_users:
-            time.sleep(random.randint(5, 25))  # Simula tempo entre mensagens
-            self.update_last_seen(user_id)
+                self.total_bytes_received += len(data)
+                message = json.loads(data.decode('utf-8'))
+                user_id = message.get("user_id")
+                action = message.get("action")
+
+                if action == "register":
+                    resources = message.get("resources", [])
+                    self.add_user(user_id, addr[0], resources)
+                    conn.sendall(b"Registered successfully")
+
+                elif action == "keep_alive":
+                    self.update_last_seen(user_id)
+                    conn.sendall(b"Keep-alive acknowledged")
+
+                elif action == "get_active_users":
+                    with self.lock:
+                        response = {
+                            "active_users": self.active_users,
+                            "total_bytes_received": self.total_bytes_received,
+                        }
+                    conn.sendall(json.dumps(response).encode('utf-8'))
+
+        except BrokenPipeError:
+            print(f"Conexão com {addr} interrompida (BrokenPipeError).")
+        except Exception as e:
+            print(f"Erro ao lidar com cliente {addr}: {e}")
+        finally:
+            conn.close()
+
+    def start_server(self):
+        print("Servidor pronto para aceitar conexões.")
+        while True:
+            try:
+                conn, addr = self.server_socket.accept()
+                conn.settimeout(60)  # Timeout por conexão
+                print(f"Conexão recebida de {addr}")
+                threading.Thread(target=self.handle_client,
+                                 args=(conn, addr), daemon=True).start()
+            except socket.timeout:
+                print("Nenhuma conexão recebida no intervalo do timeout.")
 
 
-# Inicializa o tracker
-tracker = P2PTracker()
+if __name__ == "__main__":
+    tracker = P2PTracker()
 
-# Thread para monitorar usuários inativos
-threading.Thread(target=tracker.check_inactive_users, daemon=True).start()
+    # Thread para monitorar usuários inativos
+    threading.Thread(target=tracker.check_inactive_users, daemon=True).start()
 
-# Adiciona alguns usuários
-tracker.add_user("user1", ["file1", "file2"])
-tracker.add_user("user2", ["file3", "file4"])
-
-# Função para solicitar lista de usuários ativos
-
-
-def request_active_users(tracker):
-    return tracker.get_active_users()
-
-
-# Simula solicitações de usuários
-threading.Thread(target=tracker.simulate_user_activity,
-                 args=("user1",), daemon=True).start()
-threading.Thread(target=tracker.simulate_user_activity,
-                 args=("user2",), daemon=True).start()
-
-# Caso simulado
-print("Usuário 1 solicitando lista de usuários ativos:")
-user1_resources = request_active_users(tracker)
-print("Lista de usuários ativos para user1:", user1_resources)
-
-# Espera 5 segundos
-time.sleep(5)
-
-# Usuário 1 se desconecta
-tracker.remove_user("user1")
-
-print("Usuário 2 solicitando lista de usuários ativos após 5 segundos:")
-user2_resources = request_active_users(tracker)
-print("Lista de usuários ativos para user2:", user2_resources)
+    # Inicia o servidor
+    tracker.start_server()
