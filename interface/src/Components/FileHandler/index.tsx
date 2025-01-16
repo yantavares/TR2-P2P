@@ -14,6 +14,10 @@ export const FileHandler = ({ userId }: { userId: number }) => {
   };
 
   useEffect(() => {
+    handleGetActiveUsers();
+  }, []);
+
+  useEffect(() => {
     if (!response) return;
 
     const activeUsers: {
@@ -51,7 +55,7 @@ export const FileHandler = ({ userId }: { userId: number }) => {
     >
       <h2>FileHandler - {userId}</h2>
       <p style={{ margin: 0, padding: 0 }}>
-        {onlineUsers == 2
+        {onlineUsers == 1
           ? onlineUsers + " online user"
           : onlineUsers + " online users"}
       </p>

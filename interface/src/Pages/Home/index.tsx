@@ -19,6 +19,7 @@ const mockUsers = [
 
 const Home = () => {
   const navigate = useNavigate();
+  const { userId } = useParams<{ userId: string }>();
   const handleConnect = async (user: User) => {
     try {
       const response = await registerUser(user.id, user.resources);
@@ -44,7 +45,9 @@ const Home = () => {
           peeers, chat and send files.
         </p>
         <div>
-          <button onClick={() => handleConnect(mockUsers[0])}>Connect!</button>
+          <button onClick={() => handleConnect(mockUsers[userId])}>
+            Connect!
+          </button>
         </div>
         <p>Made for the TR2 course at the University of Brasília.</p>
       </div>
