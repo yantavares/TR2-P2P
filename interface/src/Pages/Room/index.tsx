@@ -2,21 +2,26 @@ import { useNavigate } from "react-router-dom";
 import Chat from "../../Components/Chat";
 import FileHandler from "../../Components/FileHandler";
 import { sendKeepAlive } from "../../requests";
+import { useEffect } from "react";
 
 const Room = () => {
   const navigate = useNavigate();
   const urlParams = new URLSearchParams(window.location.search);
   const userId = urlParams.get("user_id");
 
-  if (!userId) {
-    console.error("User ID not found in query params.");
-    navigate("/");
-    return null;
-  }
+  useEffect(() => {
+    if (!userId) {
+      console.error("User ID not found in query params.");
+      navigate("/");
+      return;
+    }
 
-  setTimeout(() => {
-    sendKeepAlive(userId);
-  }, 5000);
+    const keepAliveInterval = setInterval(() => {
+      sendKeepAlive(userId);
+    }, 5000);
+
+    return () => clearInterval(keepAliveInterval);
+  }, [userId, navigate]);
 
   return (
     <div
@@ -40,8 +45,8 @@ const Room = () => {
           justifyContent: "space-around",
         }}
       >
-        <Chat userId={userId} />
-        <FileHandler userId={userId} />
+        <Chat userId={userId ?? "0"} />
+        <FileHandler userId={userId ?? "0"} />
       </div>
     </div>
   );

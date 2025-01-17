@@ -2,6 +2,7 @@ import { AxiosResponse } from "axios";
 import { getActiveUsers } from "../../requests";
 import { useEffect, useState } from "react";
 import { User } from "../../types";
+import File from "../File";
 
 export const FileHandler = ({ userId }: { userId: string }) => {
   const [response, setResponse] = useState<AxiosResponse | null>(null);
@@ -67,13 +68,17 @@ export const FileHandler = ({ userId }: { userId: string }) => {
         }}
       >
         <h3>Resources</h3>
-        <ul>
+        <div
+          style={{
+            overflowY: "scroll",
+            maxHeight: "10rem",
+            paddingLeft: "1rem",
+          }}
+        >
           {resources.map((resource, index) => (
-            <p style={{ color: "black" }} key={index}>
-              {resource}
-            </p>
+            <File name={resource} key={index} />
           ))}
-        </ul>
+        </div>
       </div>
       <div>
         <button onClick={() => handleGetActiveUsers()}>Refresh</button>

@@ -1,0 +1,143 @@
+import socket
+import threading
+import time
+import json
+
+
+class P2PTracker:
+    def __init__(self):
+        self.active_users = {}
+        self.lock = threading.Lock()
+
+    def add_user(self, user_id, ip, resources):
+        with self.lock:
+            self.active_users[user_id] = {
+                "ip": ip,
+                "resources": resources,
+                "last_seen": time.time(),
+            }
+
+    def remove_user(self, user_id):
+        with self.lock:
+            if user_id in self.active_users:
+                del self.active_users[user_id]
+
+    def update_last_seen(self, user_id):
+        with self.lock:
+            if user_id in self.active_users:
+                self.active_users[user_id]["last_seen"] = time.time()
+
+    def get_active_users(self):
+        with self.lock:
+            return self.active_users
+
+    def check_inactive_users(self):
+        while True:
+            try:
+                time.sleep(10)
+                print("Checking for inactive users...")
+                current_time = time.time()
+                inactive_users = []
+
+                with self.lock:
+                    inactive_users = [
+                        user_id
+                        for user_id, data in self.active_users.items()
+                        if current_time - data["last_seen"] > 30
+                    ]
+                for user_id in inactive_users:
+                    print(f"Removing inactive user: {user_id}")
+                    self.remove_user(user_id)
+            except Exception as e:
+                print(f"Error during check_inactive_users: {e}")
+
+
+class HTTPServer:
+    def __init__(self, host, port, tracker):
+        self.host = host
+        self.port = port
+        self.tracker = tracker
+
+    def start(self):
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind((self.host, self.port))
+        server_socket.listen(5)
+        print(f"Server running on {self.host}:{self.port}")
+
+        while True:
+            client_socket, address = server_socket.accept()
+            threading.Thread(target=self.handle_client,
+                             args=(client_socket, address)).start()
+
+    def handle_client(self, client_socket, address):
+        try:
+            request_data = client_socket.recv(1024).decode()
+            if not request_data:
+                return
+
+            headers, body = request_data.split("\r\n\r\n", 1)
+            lines = headers.split("\r\n")
+            method, path, _ = lines[0].split()
+
+            if method == "OPTIONS":
+                self.handle_options(client_socket)
+            elif method == "POST" and path == "/register":
+                self.handle_register(client_socket, address, body)
+            elif method == "POST" and path == "/keep_alive":
+                self.handle_keep_alive(client_socket, body)
+            elif method == "GET" and path == "/active_users":
+                self.handle_active_users(client_socket)
+            else:
+                self.send_response(client_socket, 404, {"error": "Not Found"})
+        except Exception as e:
+            print(f"Error handling client: {e}")
+        finally:
+            client_socket.close()
+
+    def handle_register(self, client_socket, address, body):
+        data = json.loads(body)
+        user_id = data.get("user_id")
+        resources = data.get("resources", [])
+        ip = address[0]
+        self.tracker.add_user(user_id, ip, resources)
+        self.send_response(client_socket, 200, {
+                           "message": "Registered successfully"})
+
+    def handle_keep_alive(self, client_socket, body):
+        data = json.loads(body)
+        user_id = data.get("user_id")
+        self.tracker.update_last_seen(user_id)
+        self.send_response(client_socket, 200, {
+                           "message": "Keep-alive acknowledged"})
+
+    def handle_active_users(self, client_socket):
+        active_users = self.tracker.get_active_users()
+        self.send_response(client_socket, 200, {"active_users": active_users})
+
+    def handle_options(self, client_socket):
+        response = "HTTP/1.1 204 No Content\r\n"
+        response += "Access-Control-Allow-Origin: *\r\n"
+        response += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+        response += "Access-Control-Allow-Headers: Content-Type\r\n"
+        response += "Connection: close\r\n\r\n"
+        client_socket.sendall(response.encode())
+
+    def send_response(self, client_socket, status_code, body):
+        response = f"HTTP/1.1 {status_code} OK\r\n"
+        response += "Content-Type: application/json\r\n"
+        response += "Access-Control-Allow-Origin: *\r\n"
+        response += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+        response += "Access-Control-Allow-Headers: Content-Type\r\n"
+        response += "Connection: close\r\n\r\n"
+        response += json.dumps(body)
+        client_socket.sendall(response.encode())
+
+
+if __name__ == "__main__":
+    tracker = P2PTracker()
+
+    threading.Thread(target=tracker.check_inactive_users, daemon=True).start()
+
+    server = HTTPServer("0.0.0.0", 5000, tracker)
+    server.start()
