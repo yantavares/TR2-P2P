@@ -1,20 +1,12 @@
-import socket
 import threading
 import time
-import json
+from HTTPServer import HTTPServer
 
 
 class P2PTracker:
-    def __init__(self, host="0.0.0.0", port=5000):
-        self.active_users = {}  # {user_id: {"ip": ip, "resources": list, "last_seen": timestamp}}
+    def __init__(self):
+        self.active_users = {}
         self.lock = threading.Lock()
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.bind((host, port))
-        self.server_socket.listen(10)  # Permite até 10 conexões simultâneas
-        self.server_socket.settimeout(60)  # Timeout de 60 segundos
-        self.total_bytes_received = 0
-        self.total_bytes_sent = 0
-        print(f"Tracker iniciado em {host}:{port}")
 
     def add_user(self, user_id, ip, resources):
         with self.lock:
@@ -23,100 +15,51 @@ class P2PTracker:
                 "resources": resources,
                 "last_seen": time.time(),
             }
-            print(f"Usuário {user_id} conectado com IP {
-                  ip} e recursos: {resources}")
+        print(f"User '{user_id}' connected from IP {
+              ip}. Total users: {len(self.active_users)}")
 
     def remove_user(self, user_id):
         with self.lock:
             if user_id in self.active_users:
                 del self.active_users[user_id]
-                print(f"Usuário {user_id} removido da lista ativa.")
+                print(f"User '{user_id}' removed. Total users: {
+                      len(self.active_users)}")
 
     def update_last_seen(self, user_id):
         with self.lock:
             if user_id in self.active_users:
                 self.active_users[user_id]["last_seen"] = time.time()
-                print(f"Keep-alive recebido de {user_id}.")
+                print(f"Updated last seen for user '{user_id}'.")
+
+    def get_active_users(self):
+        with self.lock:
+            return self.active_users
 
     def check_inactive_users(self):
         while True:
-            time.sleep(30)
-            with self.lock:
-                current_time = time.time()
-                inactive_users = [
-                    user_id
-                    for user_id, data in self.active_users.items()
-                    if current_time - data["last_seen"] > 30
-                ]
-                for user_id in inactive_users:
-                    self.remove_user(user_id)
-
-    def handle_client(self, conn, addr):
-        try:
-            while True:
-                data = conn.recv(4096)  # Buffer maior para evitar truncamento
-                if not data:
-                    break
-
-                self.total_bytes_received += len(data)
-                print(f"Bytes recebidos nesta requisição: {len(data)}")
-                message = json.loads(data.decode('utf-8'))
-                user_id = message.get("user_id")
-                action = message.get("action")
-
-                if action == "register":
-                    resources = message.get("resources", [])
-                    self.add_user(user_id, addr[0], resources)
-                    response = b"Registered successfully"
-                    conn.sendall(response)
-                    self.total_bytes_sent += len(response)
-                    print(f"Bytes enviados nesta requisição: {len(response)}")
-
-                elif action == "keep_alive":
-                    self.update_last_seen(user_id)
-                    response = b"Keep-alive acknowledged"
-                    conn.sendall(response)
-                    self.total_bytes_sent += len(response)
-                    print(f"Bytes enviados nesta requisição: {len(response)}")
-
-                elif action == "get_active_users":
-                    with self.lock:
-                        response = {
-                            "active_users": self.active_users,
-                            "total_bytes_received": self.total_bytes_received,
-                            "total_bytes_sent": self.total_bytes_sent,
-                        }
-                    response_data = json.dumps(response).encode('utf-8')
-                    conn.sendall(response_data)
-                    self.total_bytes_sent += len(response_data)
-                    print(f"Bytes enviados nesta requisição: {
-                          len(response_data)}")
-
-        except BrokenPipeError:
-            print(f"Conexão com {addr} interrompida (BrokenPipeError).")
-        except Exception as e:
-            print(f"Erro ao lidar com cliente {addr}: {e}")
-        finally:
-            conn.close()
-
-    def start_server(self):
-        print("Servidor pronto para aceitar conexões.")
-        while True:
             try:
-                conn, addr = self.server_socket.accept()
-                conn.settimeout(60)  # Timeout por conexão
-                print(f"Conexão recebida de {addr}")
-                threading.Thread(target=self.handle_client,
-                                 args=(conn, addr), daemon=True).start()
-            except socket.timeout:
-                print("Nenhuma conexão recebida no intervalo do timeout.")
+                time.sleep(10)
+                print("Checking for inactive users...")
+                current_time = time.time()
+                inactive_users = []
+
+                with self.lock:
+                    inactive_users = [
+                        user_id
+                        for user_id, data in self.active_users.items()
+                        if current_time - data["last_seen"] > 30
+                    ]
+                for user_id in inactive_users:
+                    print(f"Removing inactive user: {user_id}")
+                    self.remove_user(user_id)
+            except Exception as e:
+                print(f"Error during check_inactive_users: {e}")
 
 
 if __name__ == "__main__":
     tracker = P2PTracker()
 
-    # Thread para monitorar usuários inativos
     threading.Thread(target=tracker.check_inactive_users, daemon=True).start()
 
-    # Inicia o servidor
-    tracker.start_server()
+    server = HTTPServer("0.0.0.0", 5000, tracker)
+    server.start()
