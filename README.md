@@ -6,7 +6,7 @@ Implementação de um Sistema P2P com Funcionalidades de Comunicação, Comparti
 Este trabalho tem como objetivo implementar um sistema Peer-to-Peer (P2P) simplificado que permita: 
 
 - Comunicação por chat entre peers. 
-- Busca e compartilhamento de arquivos (incluindo imagens, vídeos e documentos). (pode ser apenas vídeo, texto, etc)
+- Busca e compartilhamento de arquivos (incluindo imagens, vídeos e documentos).
 - Transferência de arquivos com suporte a múltiplas conexões paralelas para melhorar a taxa de download. 
 - Uso de um mecanismo de incentivo que priorize peers mais colaborativos na rede. 
 - Os grupos (compostos por 2 ou 3 alunos) devem aplicar conceitos das camadas de aplicação, transporte, rede e enlace, desenvolvendo um sistema funcional durante o período do semestre. 
