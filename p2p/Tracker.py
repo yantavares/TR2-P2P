@@ -1,65 +1,85 @@
+import socket
 import threading
+import json
 import time
-from HTTPServer import HTTPServer
 
 
 class P2PTracker:
-    def __init__(self):
+    def __init__(self, host="0.0.0.0", port=5000):
+        self.host = host
+        self.port = port
         self.active_users = {}
         self.lock = threading.Lock()
 
-    def add_user(self, user_id, ip, resources):
+    def add_user(self, user_id, ip, port):
         with self.lock:
             self.active_users[user_id] = {
                 "ip": ip,
-                "resources": resources,
+                "port": port,
                 "last_seen": time.time(),
             }
-        print(f"User '{user_id}' connected from IP {
-              ip}. Total users: {len(self.active_users)}")
-
-    def remove_user(self, user_id):
-        with self.lock:
-            if user_id in self.active_users:
-                del self.active_users[user_id]
-                print(f"User '{user_id}' removed. Total users: {
-                      len(self.active_users)}")
+        print(f"User {user_id} registered from {ip}:{port}")
 
     def update_last_seen(self, user_id):
         with self.lock:
             if user_id in self.active_users:
                 self.active_users[user_id]["last_seen"] = time.time()
-                print(f"Updated last seen for user '{user_id}'.")
+
+    def remove_inactive_users(self):
+        while True:
+            time.sleep(10)
+            with self.lock:
+                now = time.time()
+                inactive_users = [
+                    user_id
+                    for user_id, data in self.active_users.items()
+                    if now - data["last_seen"] > 30  # Timeout: 30 seconds
+                ]
+                for user_id in inactive_users:
+                    print(f"Removing inactive user {user_id}")
+                    del self.active_users[user_id]
 
     def get_active_users(self):
         with self.lock:
             return self.active_users
 
-    def check_inactive_users(self):
-        while True:
+    def handle_client(self, conn, addr):
+        with conn:
             try:
-                time.sleep(10)
-                print("Checking for inactive users...")
-                current_time = time.time()
-                inactive_users = []
+                data = conn.recv(1024).decode("utf-8")
+                if not data:
+                    return
 
-                with self.lock:
-                    inactive_users = [
-                        user_id
-                        for user_id, data in self.active_users.items()
-                        if current_time - data["last_seen"] > 30
-                    ]
-                for user_id in inactive_users:
-                    print(f"Removing inactive user: {user_id}")
-                    self.remove_user(user_id)
+                request = json.loads(data)
+                if request["type"] == "register":
+                    self.add_user(request["user_id"], addr[0], request["port"])
+                    conn.sendall(b"OK")
+                elif request["type"] == "keep_alive":
+                    self.update_last_seen(request["user_id"])
+                    conn.sendall(b"OK")
+                elif request["type"] == "get_peers":
+                    active_users = self.get_active_users()
+                    conn.sendall(json.dumps(active_users).encode("utf-8"))
+                else:
+                    conn.sendall(b"Invalid request")
             except Exception as e:
-                print(f"Error during check_inactive_users: {e}")
+                print(f"Error handling client {addr}: {e}")
+
+    def start(self):
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.bind((self.host, self.port))
+        server_socket.listen(5)
+        print(f"Tracker running on {self.host}:{self.port}")
+
+        threading.Thread(target=self.remove_inactive_users,
+                         daemon=True).start()
+
+        while True:
+            conn, addr = server_socket.accept()
+            threading.Thread(target=self.handle_client,
+                             args=(conn, addr), daemon=True).start()
 
 
 if __name__ == "__main__":
     tracker = P2PTracker()
-
-    threading.Thread(target=tracker.check_inactive_users, daemon=True).start()
-
-    server = HTTPServer("0.0.0.0", 5000, tracker)
-    server.start()
+    tracker.start()
