@@ -1,8 +1,8 @@
-import json
 import socket
 import threading
-import time
+import json
 import sys
+import time
 
 
 class Peer:
@@ -63,6 +63,23 @@ class Peer:
 
         threading.Thread(target=_send_keep_alive, daemon=True).start()
 
+    def fetch_peers_from_tracker(self):
+        """
+        Fetch the list of active peers from the tracker.
+        """
+        try:
+            conn = socket.create_connection(
+                (self.tracker_ip, self.tracker_port))
+            message = json.dumps({"type": "get_peers"})
+            conn.sendall(message.encode("utf-8"))
+            response = conn.recv(4096).decode("utf-8")
+            conn.close()
+            peers = json.loads(response)
+            return peers
+        except Exception as e:
+            print(f"Error fetching peers from tracker: {e}")
+            return {}
+
     def fetch_resources_from_tracker(self):
         """
         Fetch the list of resources available on the network from the tracker.
@@ -79,24 +96,6 @@ class Peer:
             return resources
         except Exception as e:
             print(f"Error fetching resources from tracker: {e}")
-            return []
-
-    def request_peer_resources(self, peer_ip, peer_port):
-        """
-        Request the list of resources from another peer.
-        """
-        try:
-            conn = socket.create_connection((peer_ip, peer_port))
-            message = json.dumps({"type": "get_resources"})
-            conn.sendall(message.encode("utf-8"))
-            response = conn.recv(4096).decode("utf-8")
-            conn.close()
-            resources = json.loads(response)
-            print(f"Resources available at peer {
-                  peer_ip}:{peer_port}: {resources}")
-            return resources
-        except Exception as e:
-            print(f"Error requesting resources from peer: {e}")
             return []
 
     def start_peer_server(self):
@@ -119,7 +118,7 @@ class Peer:
 
     def _handle_peer_connection(self, conn, addr):
         """
-        Handle incoming messages from another peer.
+        Handle incoming messages or resource queries from another peer.
         """
         with conn:
             try:
@@ -127,14 +126,19 @@ class Peer:
                 if not data:
                     return
                 message = json.loads(data)
-                print(f"Message from {message['peer_id']}: {
-                      message['content']}")
+                if message["type"] == "message":
+                    print(f"Message from {message['peer_id']}: {
+                          message['content']}")
+                elif message["type"] == "get_resources":
+                    response = json.dumps({"resources": self.resources})
+                    conn.sendall(response.encode("utf-8"))
+                    print(f"Sent resource list to {addr}")
             except Exception as e:
                 print(f"Error handling peer connection: {e}")
 
     def connect_to_peer(self, peer_ip, peer_port):
         """
-        Connect to another peer to send messages.
+        Connect to another peer to send messages or query resources.
         """
         try:
             conn = socket.create_connection((peer_ip, peer_port))
@@ -143,35 +147,37 @@ class Peer:
             print(f"Failed to connect to peer at {peer_ip}:{peer_port}: {e}")
             return None
 
-    def fetch_peers_from_tracker(self):
-        """
-        Fetch the list of active peers from the tracker.
-        """
-        try:
-            conn = socket.create_connection(
-                (self.tracker_ip, self.tracker_port))
-            message = json.dumps({"type": "get_peers"})
-            conn.sendall(message.encode("utf-8"))
-            response = conn.recv(4096).decode("utf-8")
-            conn.close()
-            peers = json.loads(response)
-            return peers
-        except Exception as e:
-            print(f"Error fetching peers from tracker: {e}")
-            return {}
-
     def send_message(self, conn, content):
         """
         Send a message to a connected peer.
         """
         try:
-            message = json.dumps({"peer_id": self.peer_id, "content": content})
+            message = json.dumps(
+                {"type": "message", "peer_id": self.peer_id, "content": content})
             conn.sendall(message.encode("utf-8"))
             print("Message sent.")
         except Exception as e:
             print(f"Failed to send message: {e}")
         finally:
             conn.close()
+
+    def request_peer_resources(self, peer_ip, peer_port):
+        """
+        Request the list of resources from another peer.
+        """
+        try:
+            conn = socket.create_connection((peer_ip, peer_port))
+            message = json.dumps({"type": "get_resources"})
+            conn.sendall(message.encode("utf-8"))
+            response = conn.recv(4096).decode("utf-8")
+            conn.close()
+            resources = json.loads(response)["resources"]
+            print(f"Resources available at peer {
+                  peer_ip}:{peer_port}: {resources}")
+            return resources
+        except Exception as e:
+            print(f"Error requesting resources from peer: {e}")
+            return []
 
     def run(self):
         """
@@ -186,6 +192,7 @@ class Peer:
             print("2. Fetch Resources from Tracker")
             print("3. Fetch Resources from a Peer")
             print("4. Fetch Active Peers")
+            print("5. Send Message to a Peer")
 
             choice = input("Enter your choice: ").strip()
             if choice == "1":
@@ -201,6 +208,13 @@ class Peer:
                 peers = self.fetch_peers_from_tracker()
                 for pid, info in peers.items():
                     print(f"{pid} -> {info['ip']}:{info['port']}")
+            elif choice == "5":
+                peer_ip = input("Enter peer IP: ").strip()
+                peer_port = int(input("Enter peer port: ").strip())
+                conn = self.connect_to_peer(peer_ip, peer_port)
+                if conn:
+                    message = input("Enter your message: ").strip()
+                    self.send_message(conn, message)
             else:
                 print("Invalid choice. Try again.")
 
