@@ -9,25 +9,32 @@ class P2PTracker:
         self.host = host
         self.port = port
         self.active_users = {}
+        self.resources = set()  # Tracks all resources available in the network
         self.lock = threading.Lock()
 
-    def add_user(self, user_id, ip, port):
+    def add_user(self, user_id, ip, port, resources=None):
         with self.lock:
             self.active_users[user_id] = {
                 "ip": ip,
                 "port": port,
                 "last_seen": time.time(),
+                "resources": resources or [],
             }
-        print(f"User {user_id} registered from {ip}:{port}")
+            self.resources.update(resources or [])
+        print(f"User {user_id} registered from {
+              ip}:{port} with resources {resources}")
 
-    def update_last_seen(self, user_id):
+    def update_last_seen(self, user_id, resources=None):
         with self.lock:
             if user_id in self.active_users:
                 self.active_users[user_id]["last_seen"] = time.time()
+                if resources:
+                    self.active_users[user_id]["resources"] = resources
+                    self.resources.update(resources)
 
     def remove_inactive_users(self):
         while True:
-            time.sleep(10)
+            time.sleep(10)  # Check every 10 seconds
             with self.lock:
                 now = time.time()
                 inactive_users = [
@@ -37,11 +44,17 @@ class P2PTracker:
                 ]
                 for user_id in inactive_users:
                     print(f"Removing inactive user {user_id}")
+                    self.resources.difference_update(
+                        self.active_users[user_id]["resources"])
                     del self.active_users[user_id]
 
     def get_active_users(self):
         with self.lock:
             return self.active_users
+
+    def get_resources(self):
+        with self.lock:
+            return list(self.resources)
 
     def handle_client(self, conn, addr):
         with conn:
@@ -52,14 +65,19 @@ class P2PTracker:
 
                 request = json.loads(data)
                 if request["type"] == "register":
-                    self.add_user(request["user_id"], addr[0], request["port"])
+                    self.add_user(request["user_id"], addr[0],
+                                  request["port"], request.get("resources"))
                     conn.sendall(b"OK")
                 elif request["type"] == "keep_alive":
-                    self.update_last_seen(request["user_id"])
+                    self.update_last_seen(
+                        request["user_id"], request.get("resources"))
                     conn.sendall(b"OK")
                 elif request["type"] == "get_peers":
                     active_users = self.get_active_users()
                     conn.sendall(json.dumps(active_users).encode("utf-8"))
+                elif request["type"] == "get_resources":
+                    resources = self.get_resources()
+                    conn.sendall(json.dumps(resources).encode("utf-8"))
                 else:
                     conn.sendall(b"Invalid request")
             except Exception as e:
