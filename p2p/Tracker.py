@@ -9,7 +9,7 @@ class P2PTracker:
         self.host = host
         self.port = port
         self.active_users = {}
-        self.resources = set()  # Tracks all resources available in the network
+        self.resources = set()
         self.lock = threading.Lock()
 
     def add_user(self, user_id, ip, port, resources=None):
@@ -34,13 +34,13 @@ class P2PTracker:
 
     def remove_inactive_users(self):
         while True:
-            time.sleep(10)  # Check every 10 seconds
+            time.sleep(10)
             with self.lock:
                 now = time.time()
                 inactive_users = [
                     user_id
                     for user_id, data in self.active_users.items()
-                    if now - data["last_seen"] > 30  # Timeout: 30 seconds
+                    if now - data["last_seen"] > 30
                 ]
                 for user_id in inactive_users:
                     print(f"Removing inactive user {user_id}")
