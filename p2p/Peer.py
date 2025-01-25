@@ -19,7 +19,18 @@ class Peer:
     def add_resource(self, resource):
         with self.lock:
             if resource not in self.resources:
-                self.resources.append(resource)
+                if "_" in resource:
+                    resource, size = resource.split("_")
+                    size = int(size)  # size in MB
+                    if size <= 0:
+                        print("Invalid resource size.")
+                        return
+                    else:
+                        chunks = size // 10
+                        for i in range(chunks):
+                            self.resources.append(f"{resource}_{i}")
+                else:
+                    self.resources.append(resource)
                 print(f"Resource {resource} added.")
 
     def register_with_tracker(self):
