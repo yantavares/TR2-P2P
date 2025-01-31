@@ -28,12 +28,12 @@ class Peer:
         # no formato: { file_name: [lista de índices dos blocos que possui], ... }
         self.resources = {}
         self.lock = threading.Lock()
-        self.app = None  # referência para a interface (PeerApp)
+        self.app = None
 
     def connect_to_network(self, peer_id, port):
         self.peer_id = peer_id
         self.port = int(port)
-        # Registra inicialmente com os recursos (se já houver arquivos compartilhados)
+        # Registra com os recursos atuais (se houver)
         self.register_with_tracker()
         self.keep_alive()
         self.start_peer_server()
@@ -48,7 +48,6 @@ class Peer:
                 "type": "register",
                 "user_id": self.peer_id,
                 "port": self.port,
-                # dicionário com file_name: [blocos disponíveis]
                 "resources": self.resources
             }
             conn.sendall(json.dumps(message).encode("utf-8"))
@@ -93,7 +92,7 @@ class Peer:
                         index += 1
                 file_name = os.path.basename(file_path)
                 self.files[file_name] = {"size": file_size, "blocks": blocks}
-                # Como o peer possui o arquivo completo, registra todos os índices
+                # O peer possui o arquivo completo, portanto registra todos os índices
                 self.resources[file_name] = list(range(len(blocks)))
                 self.register_with_tracker()
                 if self.app:
@@ -216,19 +215,18 @@ class Peer:
                         f"Erro ao lidar com conexão de {addr}: {e}")
 
     def _choose_peer_for_block(self, block_index, file_peers):
-        """Dado um bloco, escolhe aleatoriamente um peer dentre os que possuem esse bloco."""
-        peers_with_block = [
+        """Escolhe aleatoriamente um peer dentre aqueles que possuem o bloco."""
+        candidatos = [
             peer for peer in file_peers if block_index in peer.get("blocks", [])]
-        if peers_with_block:
-            chosen = random.choice(peers_with_block)
-            return chosen
+        if candidatos:
+            return random.choice(candidatos)
         return None
 
     def download_file(self, file_name, dest_path):
         """
         Realiza o download distribuído de um arquivo:
           1. Consulta o tracker para obter os peers com o arquivo e os blocos disponíveis.
-          2. Solicita a metadata (de um dos peers) para saber o total de blocos e checksums.
+          2. Solicita a metadata (de um dos peers) para saber o total de blocos, tamanho e checksums.
           3. Para cada bloco, escolhe aleatoriamente um peer que o possua e inicia uma thread para baixá-lo.
           4. Após baixar todos os blocos, reagrupa e salva o arquivo.
           5. Atualiza seus recursos para compartilhar os blocos baixados (seeder parcial ou completo).
@@ -237,7 +235,7 @@ class Peer:
             if self.app:
                 self.app.displaySignal.emit(
                     f"Iniciando download do arquivo '{file_name}'...")
-            # Consulta o tracker para obter a lista de peers com o arquivo
+            # Obtém a lista de peers que possuem o arquivo
             file_peers = self.get_file_peers(file_name)
             if not file_peers:
                 if self.app:
@@ -245,7 +243,7 @@ class Peer:
                         f"Nenhum peer possui o arquivo '{file_name}'")
                 return
 
-            # Obter metadata (tamanho, blocos e checksums) de um dos peers
+            # Obtém a metadata do arquivo a partir de um dos peers
             metadata = None
             for peer in file_peers:
                 try:
@@ -331,13 +329,13 @@ class Peer:
                         self.app.displaySignal.emit(
                             f"Exceção no bloco {i}: {ex}")
 
-            # Cria threads para baixar cada bloco
+            # Cria e inicia uma thread para cada bloco
             for i in range(total_blocks):
                 t = threading.Thread(target=download_block, args=(i,))
                 threads.append(t)
                 t.start()
 
-            # Aguarda todas as threads finalizarem
+            # Aguarda o término de todas as threads
             for t in threads:
                 t.join()
 
@@ -361,7 +359,7 @@ class Peer:
                 if self.app:
                     self.app.displaySignal.emit(
                         f"Arquivo '{file_name}' baixado com sucesso e salvo em {save_path}")
-                # Atualiza os recursos para indicar que este peer possui o arquivo completo
+                # Atualiza os recursos para indicar que este peer agora possui o arquivo completo
                 with self.lock:
                     self.files[file_name] = metadata
                     self.resources[file_name] = list(range(total_blocks))
@@ -388,7 +386,7 @@ class PeerApp(QMainWindow):
         self.setGeometry(100, 100, 750, 700)
         main_layout = QVBoxLayout()
 
-        # Conexão
+        # Área de conexão
         connection_layout = QHBoxLayout()
         self.peer_id_input = QLineEdit()
         self.peer_id_input.setPlaceholderText("Nome do Peer")
@@ -408,7 +406,7 @@ class PeerApp(QMainWindow):
         self.upload_button.clicked.connect(self.upload_file)
         main_layout.addWidget(self.upload_button)
 
-        # Listar peers ativos
+        # Listar peers ativos (excluindo o próprio usuário)
         peers_layout = QVBoxLayout()
         self.fetch_peers_button = QPushButton("Listar Peers Ativos")
         self.fetch_peers_button.clicked.connect(self.fetch_peers)
@@ -417,15 +415,14 @@ class PeerApp(QMainWindow):
         peers_layout.addWidget(self.peer_list)
         main_layout.addLayout(peers_layout)
 
-        # Listar arquivos disponíveis
+        # Listar arquivos disponíveis com opção de detalhes
         files_layout = QVBoxLayout()
-        files_controls_layout = QHBoxLayout()
         self.fetch_files_button = QPushButton("Listar Arquivos Disponíveis")
         self.fetch_files_button.clicked.connect(self.fetch_files)
-        files_controls_layout.addWidget(self.fetch_files_button)
-        self.details_checkbox = QCheckBox("Mostrar detalhes")
-        files_controls_layout.addWidget(self.details_checkbox)
-        files_layout.addLayout(files_controls_layout)
+        files_layout.addWidget(self.fetch_files_button)
+        self.details_checkbox = QCheckBox(
+            "Mostrar detalhes (quem possui quais blocos)")
+        files_layout.addWidget(self.details_checkbox)
         self.file_list = QListWidget()
         files_layout.addWidget(self.file_list)
         main_layout.addLayout(files_layout)
@@ -478,32 +475,36 @@ class PeerApp(QMainWindow):
         peers = self.peer.fetch_peers_from_tracker()
         self.peer_list.clear()
         for pid, info in peers.items():
+            # Exclui o próprio usuário
+            if pid == self.peer.peer_id:
+                continue
             self.peer_list.addItem(f"{pid} -> {info['ip']}:{info['port']}")
 
     def fetch_files(self):
-        resources = self.peer.fetch_resources_from_tracker()
+        files = self.peer.fetch_resources_from_tracker()
         self.file_list.clear()
-        if isinstance(resources, list):
-            for file_name in resources:
-                # Se o checkbox estiver marcado, exibe detalhes do arquivo (quem possui cada bloco)
+        if isinstance(files, list):
+            for f in files:
                 if self.details_checkbox.isChecked():
-                    file_peers = self.peer.get_file_peers(file_name)
+                    # Se estiver marcado, busca detalhes de quais peers possuem o arquivo e seus blocos
+                    file_peers = self.peer.get_file_peers(f)
                     details = []
                     for peer in file_peers:
-                        details.append(f"{peer['peer_id']}({peer['ip']}:{
-                                       peer['port']}):{peer['blocks']}")
-                    item_text = f"{file_name} -> " + "; ".join(details)
+                        details.append(
+                            f"{peer['peer_id']}[{','.join(str(b) for b in peer['blocks'])}]")
+                    item_text = f"{f} -> " + " | ".join(details)
                 else:
-                    item_text = file_name
+                    item_text = f
                 self.file_list.addItem(item_text)
         else:
-            self.file_list.addItem(str(resources))
+            self.file_list.addItem(str(files))
 
     def download_file(self):
         item = self.file_list.currentItem()
         if item:
-            # Mesmo que o item contenha detalhes, a primeira parte é o nome do arquivo
-            file_name = item.text().split(" -> ")[0].strip()
+            # Considera que a primeira parte até o "->" é o nome do arquivo
+            text = item.text()
+            file_name = text.split(" -> ")[0].strip()
             dest_path = QFileDialog.getExistingDirectory(
                 self, "Selecionar Pasta para Salvar")
             if dest_path:
