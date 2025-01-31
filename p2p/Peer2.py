@@ -10,7 +10,7 @@ from PyQt5 import QtCore
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout,
                              QWidget, QFileDialog, QTextEdit, QLineEdit, QListWidget, QLabel, QHBoxLayout)
 
-BLOCK_SIZE = 1024 * 1024  # 1MB por bloco
+BLOCK_SIZE = 1024 * 1024  # 1 MB por bloco
 TRACKER_IP = "127.0.0.1"
 TRACKER_PORT = 5000
 
@@ -20,10 +20,10 @@ class Peer:
         self.peer_id = None
         self.host = "127.0.0.1"
         self.port = None
-        # Formato: nome_arquivo -> {"size": tamanho, "blocks": [{"index": int, "hash": str}, ...]}
+        # Arquivos que este peer está compartilhando: nome_arquivo -> {"size": int, "blocks": [{"index": int, "hash": str}, ...]}
         self.files = {}
         self.lock = threading.Lock()
-        self.app = None  # Referência à interface, para exibir mensagens
+        self.app = None  # Referência para atualizar a interface (PeerApp)
 
     def connect_to_network(self, peer_id, port):
         """Configura e conecta o peer à rede P2P."""
@@ -39,7 +39,7 @@ class Peer:
                 f"Peer '{self.peer_id}' conectado na porta {self.port}")
 
     def register_with_tracker(self):
-        """Registra o peer no tracker."""
+        """Registra o peer no tracker informando seus arquivos (resources)."""
         try:
             conn = socket.create_connection((TRACKER_IP, TRACKER_PORT))
             message = {
@@ -75,7 +75,7 @@ class Peer:
         threading.Thread(target=_send_keep_alive, daemon=True).start()
 
     def add_file(self, file_path):
-        """Adiciona um arquivo ao compartilhamento, dividindo-o em blocos e calculando o checksum."""
+        """Adiciona um arquivo ao compartilhamento, dividindo-o em blocos com checksum."""
         with self.lock:
             try:
                 file_size = os.path.getsize(file_path)
@@ -104,10 +104,9 @@ class Peer:
     def fetch_files_from_tracker(self):
         """
         Obtém a lista de arquivos disponíveis na rede a partir do tracker.
-
         O tracker pode retornar:
-         - Uma lista de dicionários com chaves: file_name, peer_id, ip, port; ou
-         - Um dicionário onde as chaves são os nomes dos arquivos e os valores são informações do peer.
+          - Uma lista de dicionários com chaves: file_name, peer_id, ip, port; ou
+          - Um dicionário onde as chaves são os nomes dos arquivos e os valores são informações do peer.
         """
         try:
             conn = socket.create_connection((TRACKER_IP, TRACKER_PORT))
@@ -137,6 +136,25 @@ class Peer:
             if self.app:
                 self.app.displaySignal.emit(f"Erro ao buscar peers: {e}")
             return {}
+
+    def get_file_peers(self, file_name):
+        """
+        Consulta o tracker para obter uma lista de peers que possuem o arquivo.
+        Espera-se que o tracker retorne uma lista de dicionários no formato:
+          [ {"peer_id": ..., "ip": ..., "port": ...}, ... ]
+        """
+        try:
+            conn = socket.create_connection((TRACKER_IP, TRACKER_PORT))
+            request = {"type": "get_file_peers", "file_name": file_name}
+            conn.sendall(json.dumps(request).encode("utf-8"))
+            response = conn.recv(4096).decode("utf-8")
+            conn.close()
+            return json.loads(response)
+        except Exception as e:
+            if self.app:
+                self.app.displaySignal.emit(
+                    f"Erro ao buscar peers para '{file_name}': {e}")
+            return []
 
     def start_peer_server(self):
         """Inicia o servidor do peer para aceitar conexões de outros peers."""
@@ -221,10 +239,17 @@ class Peer:
                 self.app.displaySignal.emit(f"Erro ao enviar mensagem: {e}")
 
     def download_file(self, file_name, source_peer_ip, source_peer_port, dest_path):
-        """Realiza o download de um arquivo a partir de outro peer utilizando múltiplas conexões para baixar os blocos."""
+        """
+        Realiza o download de um arquivo a partir de outro peer utilizando múltiplas conexões para baixar os blocos.
+        Segue as seguintes etapas:
+          1. Solicita ao peer doador a metadata do arquivo (tamanho, número de blocos, checksums);
+          2. Cria uma thread para cada bloco para baixá-lo em paralelo;
+          3. Valida o checksum de cada bloco;
+          4. Reagrupa os blocos na sequência correta e salva o arquivo.
+        """
         def _download():
             try:
-                # Solicita metadata do arquivo no peer doador
+                # Solicita metadata do arquivo ao peer doador
                 conn = socket.create_connection(
                     (source_peer_ip, int(source_peer_port)))
                 request = {"type": "get_file_metadata", "file_name": file_name}
@@ -287,11 +312,13 @@ class Peer:
                         self.app.displaySignal.emit(
                             f"Exceção no bloco {i}: " + str(ex))
 
+            # Cria e inicia uma thread para cada bloco
             for i in range(total_blocks):
                 t = threading.Thread(target=download_block, args=(i,))
                 threads.append(t)
                 t.start()
 
+            # Aguarda todas as threads finalizarem
             for t in threads:
                 t.join()
 
@@ -324,39 +351,36 @@ class Peer:
 
 
 class PeerApp(QMainWindow):
-    # Sinal para atualizar mensagens na interface (garante atualização na thread principal)
+    # Sinal para atualizar a interface de forma thread-safe
     displaySignal = QtCore.pyqtSignal(str)
 
     def __init__(self, peer):
         super().__init__()
         self.peer = peer
-        self.peer.app = self  # Permite que o objeto peer envie mensagens para a interface
+        self.peer.app = self  # Permite que a classe Peer envie mensagens para a interface
         self.initUI()
 
     def initUI(self):
         self.setWindowTitle("P2P File Sharing")
         self.setGeometry(100, 100, 700, 700)
-
         main_layout = QVBoxLayout()
 
-        # Conexão do peer
+        # Área de conexão
         connection_layout = QHBoxLayout()
         self.peer_id_input = QLineEdit()
         self.peer_id_input.setPlaceholderText("Nome do Peer")
         connection_layout.addWidget(QLabel("Peer:"))
         connection_layout.addWidget(self.peer_id_input)
-
         self.peer_port_input = QLineEdit()
         self.peer_port_input.setPlaceholderText("Porta do Peer")
         connection_layout.addWidget(QLabel("Porta:"))
         connection_layout.addWidget(self.peer_port_input)
-
         self.connect_button = QPushButton("Conectar à Rede P2P")
         self.connect_button.clicked.connect(self.connect_to_network)
         connection_layout.addWidget(self.connect_button)
         main_layout.addLayout(connection_layout)
 
-        # Upload de arquivo
+        # Botão de compartilhamento (upload) de arquivo
         self.upload_button = QPushButton("Compartilhar Arquivo")
         self.upload_button.clicked.connect(self.upload_file)
         main_layout.addWidget(self.upload_button)
@@ -366,7 +390,6 @@ class PeerApp(QMainWindow):
         self.fetch_peers_button = QPushButton("Listar Peers Ativos")
         self.fetch_peers_button.clicked.connect(self.fetch_peers)
         peers_layout.addWidget(self.fetch_peers_button)
-
         self.peer_list = QListWidget()
         peers_layout.addWidget(self.peer_list)
         main_layout.addLayout(peers_layout)
@@ -376,7 +399,6 @@ class PeerApp(QMainWindow):
         self.fetch_files_button = QPushButton("Listar Arquivos Disponíveis")
         self.fetch_files_button.clicked.connect(self.fetch_files)
         files_layout.addWidget(self.fetch_files_button)
-
         self.file_list = QListWidget()
         files_layout.addWidget(self.file_list)
         main_layout.addLayout(files_layout)
@@ -391,14 +413,13 @@ class PeerApp(QMainWindow):
         self.message_input = QLineEdit()
         self.message_input.setPlaceholderText("Digite a mensagem")
         message_layout.addWidget(self.message_input)
-
         self.send_message_button = QPushButton(
             "Enviar Mensagem para Peer Selecionado")
         self.send_message_button.clicked.connect(self.send_message)
         message_layout.addWidget(self.send_message_button)
         main_layout.addLayout(message_layout)
 
-        # Área de status e mensagens
+        # Área de status e logs
         self.status = QTextEdit()
         self.status.setReadOnly(True)
         main_layout.addWidget(self.status)
@@ -406,11 +427,12 @@ class PeerApp(QMainWindow):
         container = QWidget()
         container.setLayout(main_layout)
         self.setCentralWidget(container)
-
         self.displaySignal.connect(self.update_status)
 
-    def update_status(self, text):
-        """Adiciona mensagens à área de status."""
+    def update_status(self, text, *args):
+        """Atualiza a área de status, concatenando argumentos extras se houver."""
+        if args:
+            text += " " + " ".join(str(a) for a in args)
         self.status.append(text)
 
     def connect_to_network(self):
@@ -435,11 +457,9 @@ class PeerApp(QMainWindow):
     def fetch_files(self):
         files = self.peer.fetch_files_from_tracker()
         self.file_list.clear()
-        # Verifica se o retorno é um dicionário ou uma lista
+        # Se o retorno for uma lista de dicionários, formatamos cada item; caso contrário, exibimos o valor como string.
         if isinstance(files, dict):
-            # Se as chaves forem nomes dos arquivos e os valores dicionários com informações do peer
             for file_name, info in files.items():
-                # Se info já for um dicionário com os campos esperados:
                 if isinstance(info, dict):
                     item_text = f"{file_name} -> {info.get('peer_id', 'N/A')}@{
                         info.get('ip', 'N/A')}:{info.get('port', 'N/A')}"
@@ -449,8 +469,12 @@ class PeerApp(QMainWindow):
         elif isinstance(files, list):
             for file_info in files:
                 if isinstance(file_info, dict):
-                    item_text = f"{file_info.get('file_name', 'unknown')} -> {file_info.get(
-                        'peer_id', 'N/A')}@{file_info.get('ip', 'N/A')}:{file_info.get('port', 'N/A')}"
+                    # Se houver informação do peer, exibimos; senão, apenas o nome do arquivo.
+                    if "peer_id" in file_info and "ip" in file_info and "port" in file_info:
+                        item_text = f"{file_info.get('file_name', 'unknown')} -> {file_info.get(
+                            'peer_id')}@{file_info.get('ip')}:{file_info.get('port')}"
+                    else:
+                        item_text = file_info.get("file_name", "unknown")
                 else:
                     item_text = str(file_info)
                 self.file_list.addItem(item_text)
@@ -460,21 +484,35 @@ class PeerApp(QMainWindow):
     def download_file(self):
         """
         Faz o download do arquivo selecionado.
-        O item deve ter o formato: "nome_arquivo -> peer_id@ip:porta"
+        Se o item da lista estiver no formato "nome_arquivo -> peer_id@ip:porta" usa-o;
+        caso contrário, utiliza o método get_file_peers para obter os peers que possuem o arquivo.
         """
         item = self.file_list.currentItem()
         if item:
-            try:
-                text = item.text()
-                file_name, rest = text.split(" -> ")
-                # O formato esperado: "peer_id@ip:porta"
-                peer_addr = rest.split("@")[1]
-                peer_ip, peer_port = peer_addr.split(":")
-            except Exception as e:
-                self.update_status(
-                    "Formato de item inválido para download.", e)
-                return
-
+            text = item.text()
+            if " -> " in text:
+                try:
+                    file_name, rest = text.split(" -> ", 1)
+                    # Espera-se que rest tenha o formato "peer_id@ip:porta"
+                    peer_addr = rest.split("@", 1)[1]
+                    peer_ip, peer_port = peer_addr.split(":", 1)
+                except Exception as e:
+                    self.update_status(
+                        "Erro ao extrair informações do peer para download:", e)
+                    return
+            else:
+                # Se o item não contiver o delimitador, ele é apenas o nome do arquivo.
+                file_name = text.strip()
+                # Consulta o tracker para obter os peers que possuem o arquivo
+                peers_with_file = self.peer.get_file_peers(file_name)
+                if not peers_with_file:
+                    self.update_status(
+                        f"Nenhum peer encontrado com o arquivo '{file_name}'")
+                    return
+                # Seleciona o primeiro peer da lista
+                peer_info = peers_with_file[0]
+                peer_ip = peer_info.get("ip")
+                peer_port = str(peer_info.get("port"))
             dest_path = QFileDialog.getExistingDirectory(
                 self, "Selecionar Pasta para Salvar")
             if dest_path:
@@ -497,7 +535,7 @@ class PeerApp(QMainWindow):
                 peer_ip, peer_port = addr.split(":")
             except Exception as e:
                 self.update_status(
-                    "Formato de item inválido para envio de mensagem.")
+                    "Formato de item inválido para envio de mensagem:", e)
                 return
 
             content = self.message_input.text().strip()
