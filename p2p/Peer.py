@@ -5,10 +5,12 @@ import json
 import time
 import os
 import hashlib
+import random
 
 from PyQt5 import QtCore
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout,
-                             QWidget, QFileDialog, QTextEdit, QLineEdit, QListWidget, QLabel, QHBoxLayout)
+                             QWidget, QFileDialog, QTextEdit, QLineEdit, QListWidget,
+                             QLabel, QHBoxLayout, QCheckBox)
 
 BLOCK_SIZE = 1024 * 1024  # 1 MB por bloco
 TRACKER_IP = "127.0.0.1"
@@ -214,10 +216,12 @@ class Peer:
                         f"Erro ao lidar com conexão de {addr}: {e}")
 
     def _choose_peer_for_block(self, block_index, file_peers):
-        """Dado um bloco, escolhe um peer dentre os que possuem esse bloco."""
-        for peer in file_peers:
-            if block_index in peer.get("blocks", []):
-                return peer
+        """Dado um bloco, escolhe aleatoriamente um peer dentre os que possuem esse bloco."""
+        peers_with_block = [
+            peer for peer in file_peers if block_index in peer.get("blocks", [])]
+        if peers_with_block:
+            chosen = random.choice(peers_with_block)
+            return chosen
         return None
 
     def download_file(self, file_name, dest_path):
@@ -225,7 +229,7 @@ class Peer:
         Realiza o download distribuído de um arquivo:
           1. Consulta o tracker para obter os peers com o arquivo e os blocos disponíveis.
           2. Solicita a metadata (de um dos peers) para saber o total de blocos e checksums.
-          3. Para cada bloco, escolhe um peer que o possua e inicia uma thread para baixá-lo.
+          3. Para cada bloco, escolhe aleatoriamente um peer que o possua e inicia uma thread para baixá-lo.
           4. Após baixar todos os blocos, reagrupa e salva o arquivo.
           5. Atualiza seus recursos para compartilhar os blocos baixados (seeder parcial ou completo).
         """
@@ -241,7 +245,7 @@ class Peer:
                         f"Nenhum peer possui o arquivo '{file_name}'")
                 return
 
-            # Para obter a metadata (tamanho, lista de blocos e checksums), usa um dos peers
+            # Obter metadata (tamanho, blocos e checksums) de um dos peers
             metadata = None
             for peer in file_peers:
                 try:
@@ -415,9 +419,13 @@ class PeerApp(QMainWindow):
 
         # Listar arquivos disponíveis
         files_layout = QVBoxLayout()
+        files_controls_layout = QHBoxLayout()
         self.fetch_files_button = QPushButton("Listar Arquivos Disponíveis")
         self.fetch_files_button.clicked.connect(self.fetch_files)
-        files_layout.addWidget(self.fetch_files_button)
+        files_controls_layout.addWidget(self.fetch_files_button)
+        self.details_checkbox = QCheckBox("Mostrar detalhes")
+        files_controls_layout.addWidget(self.details_checkbox)
+        files_layout.addLayout(files_controls_layout)
         self.file_list = QListWidget()
         files_layout.addWidget(self.file_list)
         main_layout.addLayout(files_layout)
@@ -473,18 +481,29 @@ class PeerApp(QMainWindow):
             self.peer_list.addItem(f"{pid} -> {info['ip']}:{info['port']}")
 
     def fetch_files(self):
-        files = self.peer.fetch_resources_from_tracker()
+        resources = self.peer.fetch_resources_from_tracker()
         self.file_list.clear()
-        if isinstance(files, list):
-            for f in files:
-                self.file_list.addItem(f)
+        if isinstance(resources, list):
+            for file_name in resources:
+                # Se o checkbox estiver marcado, exibe detalhes do arquivo (quem possui cada bloco)
+                if self.details_checkbox.isChecked():
+                    file_peers = self.peer.get_file_peers(file_name)
+                    details = []
+                    for peer in file_peers:
+                        details.append(f"{peer['peer_id']}({peer['ip']}:{
+                                       peer['port']}):{peer['blocks']}")
+                    item_text = f"{file_name} -> " + "; ".join(details)
+                else:
+                    item_text = file_name
+                self.file_list.addItem(item_text)
         else:
-            self.file_list.addItem(str(files))
+            self.file_list.addItem(str(resources))
 
     def download_file(self):
         item = self.file_list.currentItem()
         if item:
-            file_name = item.text().strip()
+            # Mesmo que o item contenha detalhes, a primeira parte é o nome do arquivo
+            file_name = item.text().split(" -> ")[0].strip()
             dest_path = QFileDialog.getExistingDirectory(
                 self, "Selecionar Pasta para Salvar")
             if dest_path:
