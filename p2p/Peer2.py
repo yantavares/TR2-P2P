@@ -471,7 +471,8 @@ class PeerApp(QMainWindow):
                 peer_addr = rest.split("@")[1]
                 peer_ip, peer_port = peer_addr.split(":")
             except Exception as e:
-                self.update_status("Formato de item inválido para download.")
+                self.update_status(
+                    "Formato de item inválido para download.", e)
                 return
 
             dest_path = QFileDialog.getExistingDirectory(
