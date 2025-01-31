@@ -206,7 +206,7 @@ class Peer:
                                     "message": "Arquivo não encontrado"}
                     conn.sendall(json.dumps(response).encode("utf-8"))
                 else:
-                    # Outros tipos de mensagem
+                    # Outros tipos de mensagem podem ser tratados aqui.
                     pass
             except Exception as e:
                 if self.app:
@@ -230,6 +230,9 @@ class Peer:
           5. Atualiza seus recursos para compartilhar os blocos baixados (seeder parcial ou completo).
         """
         def _download():
+            if self.app:
+                self.app.displaySignal.emit(
+                    f"Iniciando download do arquivo '{file_name}'...")
             # Consulta o tracker para obter a lista de peers com o arquivo
             file_peers = self.get_file_peers(file_name)
             if not file_peers:
@@ -239,10 +242,12 @@ class Peer:
                 return
 
             # Para obter a metadata (tamanho, lista de blocos e checksums), usa um dos peers
-            # Escolhe o primeiro que responda
             metadata = None
             for peer in file_peers:
                 try:
+                    if self.app:
+                        self.app.displaySignal.emit(f"Tentando obter metadata de {
+                                                    peer['peer_id']} ({peer['ip']}:{peer['port']})...")
                     conn = socket.create_connection(
                         (peer["ip"], int(peer["port"])))
                     request = {"type": "get_file_metadata",
@@ -253,8 +258,14 @@ class Peer:
                     response = json.loads(resp)
                     if response.get("status") == "ok":
                         metadata = response.get("metadata")
+                        if self.app:
+                            self.app.displaySignal.emit(
+                                f"Metadata obtida de {peer['peer_id']}.")
                         break
                 except Exception as ex:
+                    if self.app:
+                        self.app.displaySignal.emit(f"Falha ao obter metadata de {
+                                                    peer['peer_id']}: {ex}")
                     continue
             if metadata is None:
                 if self.app:
@@ -275,6 +286,9 @@ class Peer:
                         self.app.displaySignal.emit(
                             f"Nenhum peer disponível para o bloco {i}")
                     return
+                if self.app:
+                    self.app.displaySignal.emit(f"Conectando para baixar bloco {i} de {
+                                                peer_for_block['peer_id']} ({peer_for_block['ip']}:{peer_for_block['port']})...")
                 try:
                     conn = socket.create_connection(
                         (peer_for_block["ip"], int(peer_for_block["port"])))
@@ -301,6 +315,9 @@ class Peer:
                             return
                         with lock:
                             blocks_data[i] = data_bytes
+                        if self.app:
+                            self.app.displaySignal.emit(
+                                f"Bloco {i} baixado com sucesso.")
                     else:
                         if self.app:
                             self.app.displaySignal.emit(
@@ -340,10 +357,9 @@ class Peer:
                 if self.app:
                     self.app.displaySignal.emit(
                         f"Arquivo '{file_name}' baixado com sucesso e salvo em {save_path}")
-                # Após o download, atualiza os recursos para indicar que este peer possui o arquivo
+                # Atualiza os recursos para indicar que este peer possui o arquivo completo
                 with self.lock:
                     self.files[file_name] = metadata
-                    # Agora o peer possui todos os blocos
                     self.resources[file_name] = list(range(total_blocks))
                 self.register_with_tracker()
             except Exception as e:
