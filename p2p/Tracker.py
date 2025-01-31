@@ -8,13 +8,24 @@ class P2PTracker:
     def __init__(self, host="0.0.0.0", port=5000):
         self.host = host
         self.port = port
-        # active_users: user_id -> { "ip": str, "port": int, "last_seen": float, "resources": [<arquivo>, ...] }
+        # Cada usuário ativo é armazenado como:
+        # user_id -> {
+        #     "ip": <ip>,
+        #     "port": <porta>,
+        #     "last_seen": <timestamp>,
+        #     "resources": {
+        #         <nome_arquivo>: [lista de índices dos blocos disponíveis],
+        #         ...
+        #     }
+        # }
         self.active_users = {}
         self.lock = threading.Lock()
 
     def add_user(self, user_id, ip, port, resources=None):
         with self.lock:
-            resources = resources or []
+            # Espera-se que 'resources' seja um dicionário, por exemplo:
+            # { "README.md": [0,1,2,3], "video.mp4": [0,1,2,3,4,5,6,7] }
+            resources = resources if resources is not None else {}
             self.active_users[user_id] = {
                 "ip": ip,
                 "port": port,
@@ -28,6 +39,8 @@ class P2PTracker:
         with self.lock:
             if user_id in self.active_users:
                 self.active_users[user_id]["last_seen"] = time.time()
+                # Se o peer enviar novos dados sobre os blocos que possui,
+                # atualizamos o dicionário de resources.
                 if resources is not None:
                     self.active_users[user_id]["resources"] = resources
 
@@ -51,29 +64,32 @@ class P2PTracker:
 
     def get_resources(self):
         """
-        Retorna uma lista de arquivos disponíveis na rede (de todos os usuários ativos).
-        (Pode conter duplicatas se vários peers possuírem o mesmo arquivo.)
+        Retorna uma lista única dos nomes dos arquivos disponíveis (em todos os usuários ativos).
         """
         with self.lock:
-            resources = []
-            for user_data in self.active_users.values():
-                resources.extend(user_data["resources"])
-            # Retorna uma lista única de arquivos
-            return list(set(resources))
+            resources = set()
+            for data in self.active_users.values():
+                resources.update(data["resources"].keys())
+            return list(resources)
 
     def get_file_peers(self, file_name):
         """
-        Retorna uma lista de peers (com suas informações) que possuem o arquivo file_name.
-        Cada item da lista é um dicionário com as chaves: "peer_id", "ip" e "port".
+        Retorna uma lista de peers que possuem o arquivo 'file_name'.
+        Cada item da lista é um dicionário contendo:
+          - "peer_id": identificador do peer
+          - "ip": endereço IP
+          - "port": porta do peer
+          - "blocks": a lista de blocos que aquele peer possui para esse arquivo.
         """
         peers = []
         with self.lock:
             for user_id, data in self.active_users.items():
-                if file_name in data.get("resources", []):
+                if file_name in data["resources"]:
                     peers.append({
                         "peer_id": user_id,
                         "ip": data["ip"],
-                        "port": data["port"]
+                        "port": data["port"],
+                        "blocks": data["resources"][file_name]
                     })
         return peers
 
