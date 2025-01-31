@@ -23,7 +23,7 @@ class P2PTracker:
 
     def add_user(self, user_id, ip, port, resources=None):
         with self.lock:
-            # Espera-se que 'resources' seja um dicionário, por exemplo:
+            # 'resources':
             # { "README.md": [0,1,2,3], "video.mp4": [0,1,2,3,4,5,6,7] }
             resources = resources if resources is not None else {}
             self.active_users[user_id] = {
