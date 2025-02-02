@@ -11,7 +11,7 @@ Este trabalho tem como objetivo implementar um sistema Peer-to-Peer (P2P) simpli
 - Uso de um mecanismo de incentivo que priorize peers mais colaborativos na rede. 
 - Os grupos (compostos por 2 ou 3 alunos) devem aplicar conceitos das camadas de aplicação, transporte, rede e enlace, desenvolvendo um sistema funcional durante o período do semestre. 
 
-## Funcionalidades Obrigatórias 
+## Funcionalidades
 
 - Chat entre peers: 
 - Comunicação direta entre dois peers conectados. 
@@ -40,28 +40,3 @@ O trabalho deve incluir um mecanismo de incentivo que priorize peers mais colabo
 - Combinação de critérios, como volume compartilhado e tempo de conexão, para calcular uma pontuação de incentivo. 
 
 O incentivo pode ser uma taxa maior de download (ou seja, se temos N conexões paralelas, um peer com maior incentivo poderia ter maiores taxas de download). Ou, de outra forma, peers com menor incentivo teriam uma taxa de download limitada em M Kbps por exemplo.  
-
-## Entregáveis 
-
-- Código-fonte: 
-- Implementação funcional, organizada e documentada. 
-- Relatório técnico: 
-- Arquitetura do sistema. 
-- Especificação do protocolo usado (chat, transferência e tracker). 
-- Descrição do mecanismo de incentivo e sua métrica. 
-- Análise de desempenho com e sem o uso de múltiplas conexões paralelas (sugestão de testes com 1, 2, 3 e 4 conexões paralelas para baixar um arquivo com volume considerável).  
-- Testes de desempenho do mecanismo de limite de banda. 
-- Demonstração: 
-- Conexão de peers via tracker. 
-- Busca e transferência de arquivos com múltiplas conexões. 
-- Mostra de como o mecanismo de incentivo prioriza peers na rede. 
-
-## Critérios de Avaliação 
-
-- Funcionalidade: 
-- O sistema atende aos requisitos especificados? 
-- Qualidade técnica: 
-- Implementação das conexões paralelas e/ou mecanismos de limite de taxa de download. 
-- Eficiência do mecanismo de incentivo. 
-- Clareza e completude: 
-- Documentação e apresentação dos resultados. 
