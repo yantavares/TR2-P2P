@@ -6,7 +6,7 @@ import time
 import os
 import hashlib
 import random
-from concurrent.futures import ThreadPoolExecutor  # Adicionado
+from concurrent.futures import ThreadPoolExecutor
 
 from PyQt5 import QtCore
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout,
@@ -17,6 +17,24 @@ BLOCK_SIZE = 1024 * 1024
 TRACKER_IP = "127.0.0.1"
 TRACKER_PORT = 5001
 
+# Função auxiliar para receber uma mensagem JSON completa utilizando um delimitador.
+
+
+def recv_json(sock, delimiter=b"\n"):
+    buffer = b""
+    while True:
+        part = sock.recv(8192)
+        if not part:
+            break
+        buffer += part
+        if delimiter in buffer:
+            break
+    if delimiter in buffer:
+        data, _ = buffer.split(delimiter, 1)
+    else:
+        data = buffer
+    return json.loads(data.decode("utf-8"))
+
 
 class Peer:
     def __init__(self):
@@ -25,14 +43,12 @@ class Peer:
         self.port = None
         self.files = {}
         self.resources = {}
-        self.max_connections = 1
-        self.semaphore = threading.Semaphore(
-            self.max_connections)  # Adicionado
-        self.active_connections = 0
+        self.max_connections = 4  # Valor padrão
+        self.semaphore = threading.Semaphore(self.max_connections)
         self.lock = threading.Lock()
         self.app = None
 
-    def set_max_connections(self, max_conn):  # Adicionado
+    def set_max_connections(self, max_conn):
         """Atualiza o número máximo de conexões simultâneas"""
         self.max_connections = max_conn
         self.semaphore = threading.Semaphore(max_conn)
@@ -82,14 +98,14 @@ class Peer:
         threading.Thread(target=_send_keep_alive, daemon=True).start()
 
     def add_file(self, file_path):
-        """Versão corrigida que lê o arquivo até EOF"""
+        """Lê o arquivo em blocos e registra-o no tracker"""
         try:
             file_size = os.path.getsize(file_path)
             blocks = []
             index = 0
             with open(file_path, "rb") as f:
                 while True:
-                    chunk = f.read(BLOCK_SIZE)  # Lê até BLOCK_SIZE ou EOF
+                    chunk = f.read(BLOCK_SIZE)
                     if not chunk:
                         break
                     block_hash = hashlib.sha256(chunk).hexdigest()
@@ -99,7 +115,6 @@ class Peer:
             self.files[file_name] = {"size": file_size, "blocks": blocks}
             self.resources[file_name] = list(range(len(blocks)))
             self.register_with_tracker()
-
             if self.app:
                 self.app.displaySignal.emit(
                     f"Arquivo '{file_name}' compartilhado com sucesso.")
@@ -137,7 +152,7 @@ class Peer:
             return []
 
     def get_file_peers(self, file_name):
-        """Consulta o tracker para obter a lista de peers que possuem o arquivo e quais blocos cada um possui."""
+        """Consulta o tracker para obter a lista de peers que possuem o arquivo e seus blocos."""
         try:
             conn = socket.create_connection((TRACKER_IP, TRACKER_PORT))
             request = {"type": "get_file_peers", "file_name": file_name}
@@ -173,91 +188,86 @@ class Peer:
                 self.app.displaySignal.emit(f"Erro ao iniciar servidor: {e}")
 
     def _handle_peer_connection(self, conn, addr):
-        """Lida com requisições de outros peers (envio de metadata ou blocos)."""
+        """Permite múltiplas requisições na mesma conexão."""
         with conn:
-            try:
-                data = conn.recv(4096)
-                if not data:
-                    return
-
+            while True:
                 try:
-                    message = json.loads(data.decode("utf-8"))
-                except json.JSONDecodeError:
-                    conn.sendall(json.dumps(
-                        {"status": "error", "message": "JSON inválido"}).encode("utf-8"
-                                                                                ))
-                    return
-                msg_type = message.get("type")
-                if msg_type == "message":
-                    content = message.get("content", "")
+                    data = conn.recv(4096)
+                    if not data:
+                        break
+                    try:
+                        message = json.loads(data.decode("utf-8"))
+                    except json.JSONDecodeError:
+                        error_msg = {"status": "error",
+                                     "message": "JSON inválido"}
+                        conn.sendall(
+                            (json.dumps(error_msg) + "\n").encode("utf-8"))
+                        continue
+
+                    msg_type = message.get("type")
+                    if msg_type == "message":
+                        content = message.get("content", "")
+                        if self.app:
+                            self.app.displaySignal.emit(
+                                f"Mensagem recebida de {addr}: {content}")
+                    elif msg_type == "get_file_metadata":
+                        file_name = message.get("file_name")
+                        if file_name in self.files:
+                            response = {"status": "ok",
+                                        "metadata": self.files[file_name]}
+                        else:
+                            response = {"status": "error",
+                                        "message": "Arquivo não encontrado"}
+                        # Adiciona delimitador para garantir o término da mensagem
+                        conn.sendall(
+                            (json.dumps(response) + "\n").encode("utf-8"))
+                    elif msg_type == "get_block":
+                        file_name = message.get("file_name")
+                        block_index = message.get("block_index")
+                        try:
+                            if file_name in self.files:
+                                with open(file_name, "rb") as f:
+                                    f.seek(block_index * BLOCK_SIZE)
+                                    chunk = f.read(BLOCK_SIZE)
+                                response = {
+                                    "status": "ok",
+                                    "block_index": block_index,
+                                    "data": chunk.hex()
+                                }
+                            else:
+                                response = {"status": "error",
+                                            "message": "Arquivo não encontrado"}
+                            conn.sendall(
+                                (json.dumps(response) + "\n").encode("utf-8"))
+                        except Exception as e:
+                            response = {"status": "error", "message": str(e)}
+                            conn.sendall(
+                                (json.dumps(response) + "\n").encode("utf-8"))
+                    else:
+                        # Outros tipos de mensagem podem ser tratados aqui.
+                        pass
+                except Exception as e:
                     if self.app:
                         self.app.displaySignal.emit(
-                            f"Mensagem recebida de {addr}: {content}")
-                elif msg_type == "get_file_metadata":
-                    file_name = message.get("file_name")
-                    if file_name in self.files:
-                        response = {"status": "ok",
-                                    "metadata": self.files[file_name]}
-                    else:
-                        response = {"status": "error",
-                                    "message": "Arquivo não encontrado"}
-                    conn.sendall(json.dumps(response).encode("utf-8"))
-                elif msg_type == "get_block":
-                    file_name = message.get("file_name")
-                    block_index = message.get("block_index")
-                    try:
-                        if file_name in self.files:
-                            with open(file_name, "rb") as f:
-                                # Calcula offset corretamente considerando blocos variáveis
-                                f.seek(block_index * BLOCK_SIZE)
-                                # Pode ser menor que BLOCK_SIZE
-                                chunk = f.read(BLOCK_SIZE)
-
-                            # Envia resposta em chunks se necessário
-                            response = {
-                                "status": "ok",
-                                "block_index": block_index,
-                                "data": chunk.hex()
-                            }
-                            data_to_send = json.dumps(response).encode("utf-8")
-
-                            # Envia em partes de 4096 bytes
-                            total_sent = 0
-                            while total_sent < len(data_to_send):
-                                sent = conn.send(
-                                    data_to_send[total_sent:total_sent+4096])
-                                if sent == 0:
-                                    raise RuntimeError("Conexão fechada")
-                                total_sent += sent
-                    except Exception as e:
-                        response = {"status": "error", "message": str(e)}
-                        conn.sendall(json.dumps(response).encode("utf-8"))
-                else:
-                    # Outros tipos de mensagem podem ser tratados aqui.
-                    pass
-            except Exception as e:
-                if self.app:
-                    self.app.displaySignal.emit(
-                        f"Erro ao lidar com conexão de {addr}: {e}")
+                            f"Erro ao lidar com conexão de {addr}: {e}")
+                    break
 
     def _choose_peer_for_block(self, block_index, file_peers, excludes_peers):
-        """Versão modificada que exclui o próprio peer"""
+        """
+        Escolhe um peer que possua o bloco indicado, ignorando os peers na lista excludes_peers e este próprio peer.
+        """
         candidatos = [
             peer for peer in file_peers
             if block_index in peer.get("blocks", [])
             and peer["peer_id"] not in excludes_peers
-            and peer["peer_id"] != self.peer_id  # Adicionado
+            and peer["peer_id"] != self.peer_id
         ]
         return random.choice(candidatos) if candidatos else None
 
     def download_file(self, file_name, dest_path):
         """
-        Realiza o download distribuído de um arquivo:
-          1. Consulta o tracker para obter os peers com o arquivo e os blocos disponíveis.
-          2. Solicita a metadata (de um dos peers) para saber o total de blocos, tamanho e checksums.
-          3. Para cada bloco, escolhe aleatoriamente um peer que o possua e inicia uma thread para baixá-lo.
-          4. Após baixar todos os blocos, reagrupa e salva o arquivo.
-          5. Atualiza seus recursos para compartilhar os blocos baixados (seeder parcial ou completo).
+        Realiza o download do arquivo dividindo-o em blocos e baixando-os em paralelo.
+        Ao final, exibe o tempo total de download.
         """
         def _download():
             if self.app:
@@ -271,36 +281,20 @@ class Peer:
                         f"Nenhum peer possui o arquivo '{file_name}'")
                 return
 
-            # Obtém a metadata do arquivo a partir de um dos peers
+            # Obtém a metadata a partir de algum peer disponível
             metadata = None
             for peer in file_peers:
                 try:
                     if self.app:
-                        self.app.displaySignal.emit(f"Tentando obter metadata de {
-                                                    peer['peer_id']} ({peer['ip']}:{peer['port']})...")
+                        self.app.displaySignal.emit(
+                            f"Tentando obter metadata de {peer['peer_id']} ({peer['ip']}:{peer['port']})...")
                     conn = socket.create_connection(
-                        (peer["ip"], int(peer["port"])))
+                        (peer["ip"], int(peer["port"])), timeout=10)
                     request = {"type": "get_file_metadata",
                                "file_name": file_name}
-                    conn.sendall(json.dumps(request).encode("utf-8"))
-
-                    # Novo sistema de recebimento de dados completo
-                    response = b""
-                    while True:
-                        part = conn.recv(4096)
-                        if not part:
-                            break
-                        response += part
-                        # Verifica se a resposta já está completa
-                        try:
-                            json.loads(response.decode("utf-8"))
-                            break
-                        except json.JSONDecodeError:
-                            continue
-
+                    conn.sendall((json.dumps(request) + "\n").encode("utf-8"))
+                    response = recv_json(conn)
                     conn.close()
-                    response = json.loads(response.decode("utf-8"))
-
                     if response.get("status") == "ok":
                         metadata = response.get("metadata")
                         if self.app:
@@ -309,8 +303,8 @@ class Peer:
                         break
                 except Exception as ex:
                     if self.app:
-                        self.app.displaySignal.emit(f"Falha ao obter metadata de {
-                                                    peer['peer_id']}: {ex}")
+                        self.app.displaySignal.emit(
+                            f"Falha ao obter metadata de {peer['peer_id']}: {ex}")
                     continue
             if metadata is None:
                 if self.app:
@@ -320,122 +314,79 @@ class Peer:
 
             total_blocks = len(metadata["blocks"])
             file_size = metadata["size"]
-            file_size_kb = file_size / 1024  # Convertendo bytes para KB
             blocks_data = [None] * total_blocks
-            lock = threading.Lock()
-            threads = []
+
+            # Marca o tempo de início do download
             start_time = time.time()
 
             def download_block(i):
-                with self.semaphore:  # Controla conexões simultâneas
-                    max_retries = 3
-                    attempt = 0
-                    excluded_peers = set()
-
-                    while attempt < max_retries:
-                        peer_for_block = self._choose_peer_for_block(
-                            i, file_peers, excluded_peers)
-
-                        # Se não houver mais peers disponíveis, limpamos a lista e tentamos novamente
-                        if not peer_for_block:
-                            if excluded_peers:  # Se já excluímos peers antes, devemos tentar novamente com eles
-                                excluded_peers.clear()
-                                self.app.displaySignal.emit(f"Nenhum outro peer disponível para o bloco {
-                                                            i}. Resetando tentativas...")
-                                continue
-                            else:
-                                if self.app:
-                                    self.app.displaySignal.emit(
-                                        f"Nenhum peer disponível para o bloco {i}")
-                                return
-
-                        if self.app:
-                            self.app.displaySignal.emit(
-                                f"Conectando para baixar bloco {i} de {
-                                    peer_for_block['peer_id']} ({peer_for_block['ip']}:{peer_for_block['port']})..."
-                            )
-
-                        try:
-                            conn = socket.create_connection(
-                                (peer_for_block["ip"], int(peer_for_block["port"])), timeout=10)
-                            req = {"type": "get_block",
-                                   "file_name": file_name, "block_index": i}
-
-                            conn.sendall(json.dumps(req).encode("utf-8"))
-                            resp_data = b""
-
-                            while True:
-                                part = conn.recv(8192)
-                                if not part:
-                                    break
-                                resp_data += part
-
-                            conn.close()
-
-                            resp_json = json.loads(resp_data.decode("utf-8"))
-                            if resp_json.get("status") == "ok":
-                                data_hex = resp_json.get("data")
-                                try:
-                                    data_bytes = bytes.fromhex(data_hex)
-                                except ValueError:
-                                    # Dados hex malformados
-                                    attempt += 1
-                                    continue
-
-                                # Verifica tamanho máximo permitido
-                                if len(data_bytes) > BLOCK_SIZE:
-                                    attempt += 1
-                                    continue
-
-                                # Armazena o bloco com segurança
-                                with lock:
-                                    blocks_data[i] = data_bytes
-
-                                if self.app:
-                                    self.app.displaySignal.emit(
-                                        f"Bloco {i} baixado com sucesso."
-                                    )
-                                return  # Sai da função se o bloco foi baixado com sucesso
-
-                        except Exception as ex:
+                max_retries = 3
+                attempt = 0
+                excluded_peers = set()
+                while attempt < max_retries:
+                    peer_for_block = self._choose_peer_for_block(
+                        i, file_peers, excluded_peers)
+                    if not peer_for_block:
+                        if excluded_peers:
+                            excluded_peers.clear()
+                            if self.app:
+                                self.app.displaySignal.emit(
+                                    f"Nenhum outro peer disponível para o bloco {
+                                        i}. Resetando tentativas..."
+                                )
+                            continue
+                        else:
+                            if self.app:
+                                self.app.displaySignal.emit(
+                                    f"Nenhum peer disponível para o bloco {i}")
+                            return
+                    try:
+                        conn = socket.create_connection(
+                            (peer_for_block["ip"], int(peer_for_block["port"])), timeout=10
+                        )
+                        req = {"type": "get_block",
+                               "file_name": file_name, "block_index": i}
+                        conn.sendall((json.dumps(req) + "\n").encode("utf-8"))
+                        response = recv_json(conn)
+                        conn.close()
+                        if response.get("status") == "ok":
+                            data_hex = response.get("data")
+                            blocks_data[i] = bytes.fromhex(data_hex)
+                            if self.app:
+                                self.app.displaySignal.emit(
+                                    f"Bloco {i} baixado de {
+                                        peer_for_block['peer_id']}."
+                                )
+                                time.sleep(0.1)
+                            return
+                        else:
                             attempt += 1
-
-                            # Se houver outros peers disponíveis, excluímos esse da lista de tentativas
-                            if len(file_peers) > 1:
-                                excluded_peers.add(peer_for_block["peer_id"])
-
+                            excluded_peers.add(peer_for_block["peer_id"])
                             if self.app:
                                 self.app.displaySignal.emit(
                                     f"Tentativa {
-                                        attempt}/{max_retries} falhou para o bloco {i}: {ex}"
+                                        attempt}/{max_retries} falhou para o bloco {i}: {response.get('message')}"
                                 )
-                            # Aguarda 2 segundos antes de tentar novamente
                             time.sleep(2)
-
-                    # Se todas as tentativas falharem
-                    if self.app:
-                        self.app.displaySignal.emit(f"Erro crítico: Falha ao baixar o bloco {
-                                                    i} após {max_retries} tentativas.")
+                    except Exception as ex:
+                        attempt += 1
+                        excluded_peers.add(peer_for_block["peer_id"])
+                        if self.app:
+                            self.app.displaySignal.emit(
+                                f"Erro na tentativa {
+                                    attempt}/{max_retries} para o bloco {i}: {ex}"
+                            )
+                        time.sleep(2)
 
             with ThreadPoolExecutor(max_workers=self.max_connections) as executor:
-                # Cria todas as tarefas de download
                 futures = [executor.submit(download_block, i)
                            for i in range(total_blocks)]
-
-                # Espera todas as tarefas completarem
                 for future in futures:
                     future.result()
 
+            # Marca o tempo de fim do download e calcula o total
             end_time = time.time()
             total_time = end_time - start_time
-            file_size_mb = file_size / (1024 * 1024)  # Converter para MB
-            speed = file_size_mb / total_time if total_time > 0 else 0
-
-            if self.app:
-                self.app.displaySignal.emit(f"Download concluído em {
-                                            total_time:.2f} segundos.")
-                self.app.displaySignal.emit(
-                    f"Velocidade média: {speed:.2f} MB/s")
 
             if None in blocks_data:
                 if self.app:
@@ -454,12 +405,15 @@ class Peer:
                 save_path = os.path.join(dest_path, file_name)
                 with open(save_path, "wb") as f:
                     f.write(file_data)
-
-                # Atualiza os recursos para indicar que este peer agora possui o arquivo completo
                 with self.lock:
                     self.files[file_name] = metadata
                     self.resources[file_name] = list(range(total_blocks))
                 self.register_with_tracker()
+                if self.app:
+                    self.app.displaySignal.emit(
+                        f"Download concluído em {
+                            total_time:.2f} segundos. Arquivo salvo em {save_path}"
+                    )
             except Exception as e:
                 if self.app:
                     self.app.displaySignal.emit(
@@ -496,12 +450,12 @@ class PeerApp(QMainWindow):
         self.connect_button.clicked.connect(self.connect_to_network)
         connection_layout.addWidget(self.connect_button)
         main_layout.addLayout(connection_layout)
+
         # Configuração do número máximo de conexões
         connections_layout = QHBoxLayout()
         self.max_conn_input = QLineEdit()
         self.max_conn_input.setPlaceholderText("Máx. Conexões")
-        self.max_conn_input.setText(
-            str(self.peer.max_connections))  # Valor inicial
+        self.max_conn_input.setText(str(self.peer.max_connections))
         connections_layout.addWidget(QLabel("Máx. Conexões:"))
         connections_layout.addWidget(self.max_conn_input)
         self.set_max_conn_button = QPushButton("Definir")
@@ -514,7 +468,7 @@ class PeerApp(QMainWindow):
         self.upload_button.clicked.connect(self.upload_file)
         main_layout.addWidget(self.upload_button)
 
-        # Listar peers ativos (excluindo o próprio usuário)
+        # Listar peers ativos
         peers_layout = QVBoxLayout()
         self.fetch_peers_button = QPushButton("Listar Peers Ativos")
         self.fetch_peers_button.clicked.connect(self.fetch_peers)
@@ -523,7 +477,7 @@ class PeerApp(QMainWindow):
         peers_layout.addWidget(self.peer_list)
         main_layout.addLayout(peers_layout)
 
-        # Listar arquivos disponíveis com opção de detalhes
+        # Listar arquivos disponíveis com detalhes opcionais
         files_layout = QVBoxLayout()
         self.fetch_files_button = QPushButton("Listar Arquivos Disponíveis")
         self.fetch_files_button.clicked.connect(self.fetch_files)
@@ -535,7 +489,7 @@ class PeerApp(QMainWindow):
         files_layout.addWidget(self.file_list)
         main_layout.addLayout(files_layout)
 
-        # Download do arquivo selecionado
+        # Botão para download do arquivo selecionado
         self.download_button = QPushButton("Baixar Arquivo Selecionado")
         self.download_button.clicked.connect(self.download_file)
         main_layout.addWidget(self.download_button)
@@ -578,7 +532,6 @@ class PeerApp(QMainWindow):
             self.update_status("Preencha o nome e a porta do Peer.")
 
     def set_max_connections(self):
-        """Versão modificada para usar o novo método do Peer"""
         try:
             max_conn = int(self.max_conn_input.text().strip())
             if max_conn < 1:
@@ -598,7 +551,6 @@ class PeerApp(QMainWindow):
         peers = self.peer.fetch_peers_from_tracker()
         self.peer_list.clear()
         for pid, info in peers.items():
-            # Exclui o próprio usuário
             if pid == self.peer.peer_id:
                 continue
             self.peer_list.addItem(f"{pid} -> {info['ip']}:{info['port']}")
@@ -609,7 +561,6 @@ class PeerApp(QMainWindow):
         if isinstance(files, list):
             for f in files:
                 if self.details_checkbox.isChecked():
-                    # Se estiver marcado, busca detalhes de quais peers possuem o arquivo e seus blocos
                     file_peers = self.peer.get_file_peers(f)
                     details = []
                     for peer in file_peers:
@@ -625,7 +576,6 @@ class PeerApp(QMainWindow):
     def download_file(self):
         item = self.file_list.currentItem()
         if item:
-            # Considera que a primeira parte até o "->" é o nome do arquivo
             text = item.text()
             file_name = text.split(" -> ")[0].strip()
             dest_path = QFileDialog.getExistingDirectory(
