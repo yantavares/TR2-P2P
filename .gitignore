@@ -1,2 +1,7 @@
 __pycache__/
 .ropeproject/
+p2p/myvenv/
+p2p/DownloadsPeer1/
+p2p/downloadsPeer2/
+p2p/downloadsPeer3/
+p2p/downloadsPeer4/
