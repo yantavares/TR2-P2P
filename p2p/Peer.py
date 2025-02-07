@@ -43,13 +43,16 @@ class Peer:
         self.port = None
         self.files = {}
         self.resources = {}
-        self.max_connections = 4  # Valor padrão
+        self.max_connections = 4  # Valor padrão para nível 1
+        self.level = 1           # Nível inicial
+        self.xp = 0              # Pontos de experiência iniciais
+        self.level_threshold = 50  # XP necessária para subir de nível
         self.semaphore = threading.Semaphore(self.max_connections)
         self.lock = threading.Lock()
         self.app = None
 
     def set_max_connections(self, max_conn):
-        """Atualiza o número máximo de conexões simultâneas"""
+        """Atualiza o número máximo de conexões simultâneas."""
         self.max_connections = max_conn
         self.semaphore = threading.Semaphore(max_conn)
 
@@ -61,7 +64,8 @@ class Peer:
         self.start_peer_server()
         if self.app:
             self.app.displaySignal.emit(
-                f"Peer '{self.peer_id}' conectado na porta {self.port}")
+                f"Peer '{self.peer_id}' (Lv. {self.level}) conectado na porta {self.port}"
+            )
 
     def register_with_tracker(self):
         try:
@@ -70,7 +74,8 @@ class Peer:
                 "type": "register",
                 "user_id": self.peer_id,
                 "port": self.port,
-                "resources": self.resources
+                "resources": self.resources,
+                "level": self.level
             }
             conn.sendall(json.dumps(message).encode("utf-8"))
             conn.close()
@@ -98,7 +103,7 @@ class Peer:
         threading.Thread(target=_send_keep_alive, daemon=True).start()
 
     def add_file(self, file_path):
-        """Lê o arquivo em blocos e registra-o no tracker"""
+        """Lê o arquivo em blocos, registra-o e atualiza XP e nível."""
         try:
             file_size = os.path.getsize(file_path)
             blocks = []
@@ -114,10 +119,26 @@ class Peer:
             file_name = os.path.basename(file_path)
             self.files[file_name] = {"size": file_size, "blocks": blocks}
             self.resources[file_name] = list(range(len(blocks)))
+
+            # Atualiza XP: cada bloco adicionado confere 1 ponto de XP.
+            xp_ganho = len(blocks)
+            self.xp += xp_ganho
+
+            # Calcula o novo nível: cada 100 XP equivale a um nível extra.
+            novo_nivel = 1 + self.xp // self.level_threshold
+            if novo_nivel > self.level:
+                self.level = novo_nivel
+                self.max_connections = 4 + (self.level - 1)
+                if self.app:
+                    self.app.displaySignal.emit(
+                        f"Nível atualizado: {self.level}. Máx. conexões agora: {self.max_connections}.")
+
+            # Re-registra para atualizar as informações no tracker.
             self.register_with_tracker()
+
             if self.app:
                 self.app.displaySignal.emit(
-                    f"Arquivo '{file_name}' compartilhado com sucesso.")
+                    f"Arquivo '{file_name}' compartilhado com sucesso. XP ganho: {xp_ganho}. Total XP: {self.xp}.")
         except Exception as e:
             if self.app:
                 self.app.displaySignal.emit(
@@ -171,8 +192,8 @@ class Peer:
             while True:
                 try:
                     conn, addr = server_socket.accept()
-                    threading.Thread(target=self._handle_peer_connection,
-                                     args=(conn, addr), daemon=True).start()
+                    threading.Thread(target=self._handle_peer_connection, args=(
+                        conn, addr), daemon=True).start()
                 except Exception as e:
                     if self.app:
                         self.app.displaySignal.emit(
@@ -218,7 +239,6 @@ class Peer:
                         else:
                             response = {"status": "error",
                                         "message": "Arquivo não encontrado"}
-                        # Adiciona delimitador para garantir o término da mensagem
                         conn.sendall(
                             (json.dumps(response) + "\n").encode("utf-8"))
                     elif msg_type == "get_block":
@@ -230,10 +250,7 @@ class Peer:
                                     f.seek(block_index * BLOCK_SIZE)
                                     chunk = f.read(BLOCK_SIZE)
                                 response = {
-                                    "status": "ok",
-                                    "block_index": block_index,
-                                    "data": chunk.hex()
-                                }
+                                    "status": "ok", "block_index": block_index, "data": chunk.hex()}
                             else:
                                 response = {"status": "error",
                                             "message": "Arquivo não encontrado"}
@@ -244,7 +261,6 @@ class Peer:
                             conn.sendall(
                                 (json.dumps(response) + "\n").encode("utf-8"))
                     else:
-                        # Outros tipos de mensagem podem ser tratados aqui.
                         pass
                 except Exception as e:
                     if self.app:
@@ -253,9 +269,6 @@ class Peer:
                     break
 
     def _choose_peer_for_block(self, block_index, file_peers, excludes_peers):
-        """
-        Escolhe um peer que possua o bloco indicado, ignorando os peers na lista excludes_peers e este próprio peer.
-        """
         candidatos = [
             peer for peer in file_peers
             if block_index in peer.get("blocks", [])
@@ -265,15 +278,10 @@ class Peer:
         return random.choice(candidatos) if candidatos else None
 
     def download_file(self, file_name, dest_path):
-        """
-        Realiza o download do arquivo dividindo-o em blocos e baixando-os em paralelo.
-        Ao final, exibe o tempo total de download.
-        """
         def _download():
             if self.app:
                 self.app.displaySignal.emit(
                     f"Iniciando download do arquivo '{file_name}'...")
-            # Obtém a lista de peers que possuem o arquivo
             file_peers = self.get_file_peers(file_name)
             if not file_peers:
                 if self.app:
@@ -281,7 +289,6 @@ class Peer:
                         f"Nenhum peer possui o arquivo '{file_name}'")
                 return
 
-            # Obtém a metadata a partir de algum peer disponível
             metadata = None
             for peer in file_peers:
                 try:
@@ -316,7 +323,6 @@ class Peer:
             file_size = metadata["size"]
             blocks_data = [None] * total_blocks
 
-            # Marca o tempo de início do download
             start_time = time.time()
 
             def download_block(i):
@@ -331,9 +337,7 @@ class Peer:
                             excluded_peers.clear()
                             if self.app:
                                 self.app.displaySignal.emit(
-                                    f"Nenhum outro peer disponível para o bloco {
-                                        i}. Resetando tentativas..."
-                                )
+                                    f"Nenhum outro peer disponível para o bloco {i}. Resetando tentativas...")
                             continue
                         else:
                             if self.app:
@@ -342,8 +346,7 @@ class Peer:
                             return
                     try:
                         conn = socket.create_connection(
-                            (peer_for_block["ip"], int(peer_for_block["port"])), timeout=10
-                        )
+                            (peer_for_block["ip"], int(peer_for_block["port"])), timeout=10)
                         req = {"type": "get_block",
                                "file_name": file_name, "block_index": i}
                         conn.sendall((json.dumps(req) + "\n").encode("utf-8"))
@@ -354,9 +357,7 @@ class Peer:
                             blocks_data[i] = bytes.fromhex(data_hex)
                             if self.app:
                                 self.app.displaySignal.emit(
-                                    f"Bloco {i} baixado de {
-                                        peer_for_block['peer_id']}."
-                                )
+                                    f"Bloco {i} baixado de {peer_for_block['peer_id']}.")
                                 time.sleep(0.1)
                             return
                         else:
@@ -364,18 +365,14 @@ class Peer:
                             excluded_peers.add(peer_for_block["peer_id"])
                             if self.app:
                                 self.app.displaySignal.emit(
-                                    f"Tentativa {
-                                        attempt}/{max_retries} falhou para o bloco {i}: {response.get('message')}"
-                                )
+                                    f"Tentativa {attempt}/{max_retries} falhou para o bloco {i}: {response.get('message')}")
                             time.sleep(2)
                     except Exception as ex:
                         attempt += 1
                         excluded_peers.add(peer_for_block["peer_id"])
                         if self.app:
                             self.app.displaySignal.emit(
-                                f"Erro na tentativa {
-                                    attempt}/{max_retries} para o bloco {i}: {ex}"
-                            )
+                                f"Erro na tentativa {attempt}/{max_retries} para o bloco {i}: {ex}")
                         time.sleep(2)
 
             with ThreadPoolExecutor(max_workers=self.max_connections) as executor:
@@ -384,7 +381,6 @@ class Peer:
                 for future in futures:
                     future.result()
 
-            # Marca o tempo de fim do download e calcula o total
             end_time = time.time()
             total_time = end_time - start_time
 
@@ -411,9 +407,7 @@ class Peer:
                 self.register_with_tracker()
                 if self.app:
                     self.app.displaySignal.emit(
-                        f"Download concluído em {
-                            total_time:.2f} segundos. Arquivo salvo em {save_path}"
-                    )
+                        f"Download concluído em {total_time:.2f} segundos. Arquivo salvo em {save_path}")
             except Exception as e:
                 if self.app:
                     self.app.displaySignal.emit(
@@ -553,7 +547,9 @@ class PeerApp(QMainWindow):
         for pid, info in peers.items():
             if pid == self.peer.peer_id:
                 continue
-            self.peer_list.addItem(f"{pid} -> {info['ip']}:{info['port']}")
+            # Exibe o nível do peer ao lado do nome
+            self.peer_list.addItem(
+                f"{pid} (Lv. {info.get('level', 1)}) -> {info['ip']}:{info['port']}")
 
     def fetch_files(self):
         files = self.peer.fetch_resources_from_tracker()
@@ -592,7 +588,7 @@ class PeerApp(QMainWindow):
         item = self.peer_list.currentItem()
         if item:
             try:
-                text = item.text()  # Formato: "peer_id -> ip:porta"
+                text = item.text()  # Formato: "peer_id (Lv. x) -> ip:porta"
                 parts = text.split(" -> ")
                 addr = parts[1]
                 peer_ip, peer_port = addr.split(":")

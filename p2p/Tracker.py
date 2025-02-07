@@ -16,31 +16,32 @@ class P2PTracker:
         #     "resources": {
         #         <nome_arquivo>: [lista de índices dos blocos disponíveis],
         #         ...
-        #     }
+        #     },
+        #     "level": <nível do usuário>,
+        #     "max_connections": <número máximo de conexões permitidas>
         # }
         self.active_users = {}
         self.lock = threading.Lock()
 
-    def add_user(self, user_id, ip, port, resources=None):
+    def add_user(self, user_id, ip, port, resources=None, level=1):
         with self.lock:
-            # 'resources':
-            # { "README.md": [0,1,2,3], "video.mp4": [0,1,2,3,4,5,6,7] }
             resources = resources if resources is not None else {}
+            max_connections = 4 + (level - 1)
             self.active_users[user_id] = {
                 "ip": ip,
                 "port": port,
                 "last_seen": time.time(),
                 "resources": resources,
+                "level": level,
+                "max_connections": max_connections
             }
-        print(f"User {user_id} registered from {
+        print(f"User {user_id} (Lv. {level}) registered from {
               ip}:{port} with resources {resources}")
 
     def update_last_seen(self, user_id, resources=None):
         with self.lock:
             if user_id in self.active_users:
                 self.active_users[user_id]["last_seen"] = time.time()
-                # Se o peer enviar novos dados sobre os blocos que possui,
-                # atualizamos o dicionário de resources.
                 if resources is not None:
                     self.active_users[user_id]["resources"] = resources
 
@@ -63,9 +64,6 @@ class P2PTracker:
             return dict(self.active_users)
 
     def get_resources(self):
-        """
-        Retorna uma lista única dos nomes dos arquivos disponíveis (em todos os usuários ativos).
-        """
         with self.lock:
             resources = set()
             for data in self.active_users.values():
@@ -73,14 +71,6 @@ class P2PTracker:
             return list(resources)
 
     def get_file_peers(self, file_name):
-        """
-        Retorna uma lista de peers que possuem o arquivo 'file_name'.
-        Cada item da lista é um dicionário contendo:
-          - "peer_id": identificador do peer
-          - "ip": endereço IP
-          - "port": porta do peer
-          - "blocks": a lista de blocos que aquele peer possui para esse arquivo.
-        """
         peers = []
         with self.lock:
             for user_id, data in self.active_users.items():
@@ -89,7 +79,9 @@ class P2PTracker:
                         "peer_id": user_id,
                         "ip": data["ip"],
                         "port": data["port"],
-                        "blocks": data["resources"][file_name]
+                        "blocks": data["resources"][file_name],
+                        "level": data["level"],
+                        "max_connections": data["max_connections"]
                     })
         return peers
 
@@ -103,11 +95,14 @@ class P2PTracker:
                 request = json.loads(data)
                 req_type = request.get("type")
                 if req_type == "register":
+                    # Obtém o nível do peer, padrão 1 se não especificado
+                    level = request.get("level", 1)
                     self.add_user(
                         request["user_id"],
                         addr[0],
                         request["port"],
-                        request.get("resources")
+                        request.get("resources"),
+                        level
                     )
                     conn.sendall(b"OK")
                 elif req_type == "keep_alive":
