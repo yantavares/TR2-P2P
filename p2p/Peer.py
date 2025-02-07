@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout
 
 BLOCK_SIZE = 1024 * 1024  # 1 MB por bloco
 TRACKER_IP = "127.0.0.1"
-TRACKER_PORT = 5000
+TRACKER_PORT = 5001
 
 
 class Peer:
@@ -27,6 +27,8 @@ class Peer:
         # resources: dicionário com informações sobre os arquivos que este peer está compartilhando,
         # no formato: { file_name: [lista de índices dos blocos que possui], ... }
         self.resources = {}
+        self.max_connections = 1  # Define o limite de conexões simultâneas
+        self.active_connections = 0
         self.lock = threading.Lock()
         self.app = None
 
@@ -160,7 +162,7 @@ class Peer:
         try:
             server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server_socket.bind((self.host, self.port))
-            server_socket.listen(5)
+            server_socket.listen(self.max_connections)
             threading.Thread(target=_accept_connections, args=(
                 server_socket,), daemon=True).start()
         except Exception as e:
@@ -214,10 +216,11 @@ class Peer:
                     self.app.displaySignal.emit(
                         f"Erro ao lidar com conexão de {addr}: {e}")
 
-    def _choose_peer_for_block(self, block_index, file_peers):
-        """Escolhe aleatoriamente um peer dentre aqueles que possuem o bloco."""
+    def _choose_peer_for_block(self, block_index, file_peers, excludes_peers):
+        """Escolhe aleatoriamente um peer dentre aqueles que possuem o bloco, excluindo os peers especificados."""
         candidatos = [
-            peer for peer in file_peers if block_index in peer.get("blocks", [])]
+            peer for peer in file_peers if block_index in peer.get("blocks", []) and peer["peer_id"] not in excludes_peers
+        ]
         if candidatos:
             return random.choice(candidatos)
         return None
@@ -277,57 +280,95 @@ class Peer:
 
             total_blocks = len(metadata["blocks"])
             file_size = metadata["size"]
+            file_size_kb = file_size / 1024  # Convertendo bytes para KB
             blocks_data = [None] * total_blocks
             lock = threading.Lock()
             threads = []
+            start_time = time.time()
 
             def download_block(i):
-                peer_for_block = self._choose_peer_for_block(i, file_peers)
-                if not peer_for_block:
+                """
+                Baixa um bloco específico, tentando novamente se falhar e alternando peers se possível.
+                """
+                max_retries = 3  # Número máximo de tentativas
+                attempt = 0
+                excluded_peers = set()  # Peers que falharam anteriormente
+
+                while attempt < max_retries:
+                    # Escolhe um peer para baixar o bloco
+                    peer_for_block = self._choose_peer_for_block(i, file_peers, excluded_peers)
+
+                    # Se não houver mais peers disponíveis, limpamos a lista e tentamos novamente
+                    if not peer_for_block:
+                        if excluded_peers:  # Se já excluímos peers antes, devemos tentar novamente com eles
+                            excluded_peers.clear()
+                            self.app.displaySignal.emit(f"Nenhum outro peer disponível para o bloco {i}. Resetando tentativas...")
+                            continue
+                        else:
+                            if self.app:
+                                self.app.displaySignal.emit(f"Nenhum peer disponível para o bloco {i}")
+                            return
+                    
                     if self.app:
                         self.app.displaySignal.emit(
-                            f"Nenhum peer disponível para o bloco {i}")
-                    return
-                if self.app:
-                    self.app.displaySignal.emit(f"Conectando para baixar bloco {i} de {
-                                                peer_for_block['peer_id']} ({peer_for_block['ip']}:{peer_for_block['port']})...")
-                try:
-                    conn = socket.create_connection(
-                        (peer_for_block["ip"], int(peer_for_block["port"])))
-                    req = {"type": "get_block",
-                           "file_name": file_name, "block_index": i}
-                    conn.sendall(json.dumps(req).encode("utf-8"))
-                    resp_data = b""
-                    while True:
-                        part = conn.recv(8192)
-                        if not part:
-                            break
-                        resp_data += part
-                    conn.close()
-                    resp_json = json.loads(resp_data.decode("utf-8"))
-                    if resp_json.get("status") == "ok":
-                        data_hex = resp_json.get("data")
-                        data_bytes = bytes.fromhex(data_hex)
-                        calc_hash = hashlib.sha256(data_bytes).hexdigest()
-                        expected_hash = metadata["blocks"][i]["hash"]
-                        if calc_hash != expected_hash:
+                            f"Conectando para baixar bloco {i} de {peer_for_block['peer_id']} ({peer_for_block['ip']}:{peer_for_block['port']})..."
+                        )
+
+                    try:
+                        conn = socket.create_connection((peer_for_block["ip"], int(peer_for_block["port"])), timeout=10)
+                        req = {"type": "get_block", "file_name": file_name, "block_index": i}
+
+                        conn.sendall(json.dumps(req).encode("utf-8"))
+                        resp_data = b""
+
+                        while True:
+                            part = conn.recv(8192)
+                            if not part:
+                                break
+                            resp_data += part
+
+                        conn.close()
+
+                        resp_json = json.loads(resp_data.decode("utf-8"))
+                        if resp_json.get("status") == "ok":
+                            data_hex = resp_json.get("data")
+                            data_bytes = bytes.fromhex(data_hex)
+
+                            # Verifica a integridade do bloco via hash SHA-256
+                            calc_hash = hashlib.sha256(data_bytes).hexdigest()
+                            expected_hash = metadata["blocks"][i]["hash"]
+                            if calc_hash != expected_hash:
+                                if self.app:
+                                    self.app.displaySignal.emit(f"Checksum falhou para o bloco {i}, tentando novamente...")
+                                attempt += 1
+                                continue  # Não excluímos o peer, apenas tentamos novamente
+
+                            # Armazena o bloco com segurança
+                            with lock:
+                                blocks_data[i] = data_bytes
+
                             if self.app:
                                 self.app.displaySignal.emit(
-                                    f"Checksum falhou para o bloco {i}")
-                            return
-                        with lock:
-                            blocks_data[i] = data_bytes
+                                    f"Bloco {i} baixado com sucesso."
+                                )
+                            return  # Sai da função se o bloco foi baixado com sucesso
+
+                    except Exception as ex:
+                        attempt += 1
+
+                        # Se houver outros peers disponíveis, excluímos esse da lista de tentativas
+                        if len(file_peers) > 1:
+                            excluded_peers.add(peer_for_block["peer_id"])
+
                         if self.app:
                             self.app.displaySignal.emit(
-                                f"Bloco {i} baixado com sucesso.")
-                    else:
-                        if self.app:
-                            self.app.displaySignal.emit(
-                                f"Erro no bloco {i}: {resp_json.get('message', '')}")
-                except Exception as ex:
-                    if self.app:
-                        self.app.displaySignal.emit(
-                            f"Exceção no bloco {i}: {ex}")
+                                f"Tentativa {attempt}/{max_retries} falhou para o bloco {i}: {ex}"
+                            )
+                        time.sleep(2)  # Aguarda 2 segundos antes de tentar novamente
+
+                # Se todas as tentativas falharem
+                if self.app:
+                    self.app.displaySignal.emit(f"Erro crítico: Falha ao baixar o bloco {i} após {max_retries} tentativas.")
 
             # Cria e inicia uma thread para cada bloco
             for i in range(total_blocks):
@@ -338,6 +379,9 @@ class Peer:
             # Aguarda o término de todas as threads
             for t in threads:
                 t.join()
+
+            end_time = time.time()
+            total_time = end_time - start_time  # Tempo total de download
 
             if None in blocks_data:
                 if self.app:
@@ -356,9 +400,18 @@ class Peer:
                 save_path = os.path.join(dest_path, file_name)
                 with open(save_path, "wb") as f:
                     f.write(file_data)
+
+                # Calcula a velocidade média do download
+                avg_speed = (file_size_kb / total_time) if total_time > 0 else 0
+
                 if self.app:
                     self.app.displaySignal.emit(
-                        f"Arquivo '{file_name}' baixado com sucesso e salvo em {save_path}")
+                        f"Download concluído em {total_time:.2f} segundos."
+                    )
+                    self.app.displaySignal.emit(
+                        f"Velocidade média do download: {avg_speed:.2f} KB/s"
+                    )
+
                 # Atualiza os recursos para indicar que este peer agora possui o arquivo completo
                 with self.lock:
                     self.files[file_name] = metadata
@@ -400,6 +453,17 @@ class PeerApp(QMainWindow):
         self.connect_button.clicked.connect(self.connect_to_network)
         connection_layout.addWidget(self.connect_button)
         main_layout.addLayout(connection_layout)
+        # Configuração do número máximo de conexões
+        connections_layout = QHBoxLayout()
+        self.max_conn_input = QLineEdit()
+        self.max_conn_input.setPlaceholderText("Máx. Conexões")
+        self.max_conn_input.setText(str(self.peer.max_connections))  # Valor inicial
+        connections_layout.addWidget(QLabel("Máx. Conexões:"))
+        connections_layout.addWidget(self.max_conn_input)
+        self.set_max_conn_button = QPushButton("Definir")
+        self.set_max_conn_button.clicked.connect(self.set_max_connections)
+        connections_layout.addWidget(self.set_max_conn_button)
+        main_layout.addLayout(connections_layout)
 
         # Upload de arquivo
         self.upload_button = QPushButton("Compartilhar Arquivo")
@@ -461,10 +525,23 @@ class PeerApp(QMainWindow):
     def connect_to_network(self):
         peer_id = self.peer_id_input.text().strip()
         peer_port = self.peer_port_input.text().strip()
+        if not peer_port.isdigit():
+            self.update_status("A porta do Peer deve ser um número.")
+            return
         if peer_id and peer_port:
             self.peer.connect_to_network(peer_id, peer_port)
         else:
             self.update_status("Preencha o nome e a porta do Peer.")
+
+    def set_max_connections(self):
+        try:
+            max_conn = int(self.max_conn_input.text().strip())
+            if max_conn < 1:
+                raise ValueError("O número mínimo de conexões deve ser 1.")
+            self.peer.max_connections = max_conn
+            self.update_status(f"Número máximo de conexões ajustado para {max_conn}.")
+        except ValueError as e:
+            self.update_status(f"Valor inválido para conexões: {e}")
 
     def upload_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Selecionar Arquivo")
