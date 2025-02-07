@@ -6,13 +6,14 @@ import time
 import os
 import hashlib
 import random
+from concurrent.futures import ThreadPoolExecutor  # Adicionado
 
 from PyQt5 import QtCore
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout,
                              QWidget, QFileDialog, QTextEdit, QLineEdit, QListWidget,
                              QLabel, QHBoxLayout, QCheckBox)
 
-BLOCK_SIZE = 1024 * 1024  # 1 MB por bloco
+BLOCK_SIZE = int((1024 * 1024)/2)
 TRACKER_IP = "127.0.0.1"
 TRACKER_PORT = 5001
 
@@ -22,20 +23,23 @@ class Peer:
         self.peer_id = None
         self.host = "127.0.0.1"
         self.port = None
-        # self.files: chave = nome do arquivo, valor = { "size": int, "blocks": [ { "index": int, "hash": str }, ... ] }
         self.files = {}
-        # resources: dicionário com informações sobre os arquivos que este peer está compartilhando,
-        # no formato: { file_name: [lista de índices dos blocos que possui], ... }
         self.resources = {}
-        self.max_connections = 1  # Define o limite de conexões simultâneas
+        self.max_connections = 1
+        self.semaphore = threading.Semaphore(
+            self.max_connections)  # Adicionado
         self.active_connections = 0
         self.lock = threading.Lock()
         self.app = None
 
+    def set_max_connections(self, max_conn):  # Adicionado
+        """Atualiza o número máximo de conexões simultâneas"""
+        self.max_connections = max_conn
+        self.semaphore = threading.Semaphore(max_conn)
+
     def connect_to_network(self, peer_id, port):
         self.peer_id = peer_id
         self.port = int(port)
-        # Registra com os recursos atuais (se houver)
         self.register_with_tracker()
         self.keep_alive()
         self.start_peer_server()
@@ -217,13 +221,14 @@ class Peer:
                         f"Erro ao lidar com conexão de {addr}: {e}")
 
     def _choose_peer_for_block(self, block_index, file_peers, excludes_peers):
-        """Escolhe aleatoriamente um peer dentre aqueles que possuem o bloco, excluindo os peers especificados."""
+        """Versão modificada que exclui o próprio peer"""
         candidatos = [
-            peer for peer in file_peers if block_index in peer.get("blocks", []) and peer["peer_id"] not in excludes_peers
+            peer for peer in file_peers
+            if block_index in peer.get("blocks", [])
+            and peer["peer_id"] not in excludes_peers
+            and peer["peer_id"] != self.peer_id  # Adicionado
         ]
-        if candidatos:
-            return random.choice(candidatos)
-        return None
+        return random.choice(candidatos) if candidatos else None
 
     def download_file(self, file_name, dest_path):
         """
@@ -287,98 +292,105 @@ class Peer:
             start_time = time.time()
 
             def download_block(i):
-                """
-                Baixa um bloco específico, tentando novamente se falhar e alternando peers se possível.
-                """
-                max_retries = 3  # Número máximo de tentativas
-                attempt = 0
-                excluded_peers = set()  # Peers que falharam anteriormente
+                with self.semaphore:  # Controla conexões simultâneas
+                    max_retries = 3
+                    attempt = 0
+                    excluded_peers = set()
 
-                while attempt < max_retries:
-                    # Escolhe um peer para baixar o bloco
-                    peer_for_block = self._choose_peer_for_block(i, file_peers, excluded_peers)
+                    while attempt < max_retries:
+                        peer_for_block = self._choose_peer_for_block(
+                            i, file_peers, excluded_peers)
 
-                    # Se não houver mais peers disponíveis, limpamos a lista e tentamos novamente
-                    if not peer_for_block:
-                        if excluded_peers:  # Se já excluímos peers antes, devemos tentar novamente com eles
-                            excluded_peers.clear()
-                            self.app.displaySignal.emit(f"Nenhum outro peer disponível para o bloco {i}. Resetando tentativas...")
-                            continue
-                        else:
-                            if self.app:
-                                self.app.displaySignal.emit(f"Nenhum peer disponível para o bloco {i}")
-                            return
-                    
-                    if self.app:
-                        self.app.displaySignal.emit(
-                            f"Conectando para baixar bloco {i} de {peer_for_block['peer_id']} ({peer_for_block['ip']}:{peer_for_block['port']})..."
-                        )
-
-                    try:
-                        conn = socket.create_connection((peer_for_block["ip"], int(peer_for_block["port"])), timeout=10)
-                        req = {"type": "get_block", "file_name": file_name, "block_index": i}
-
-                        conn.sendall(json.dumps(req).encode("utf-8"))
-                        resp_data = b""
-
-                        while True:
-                            part = conn.recv(8192)
-                            if not part:
-                                break
-                            resp_data += part
-
-                        conn.close()
-
-                        resp_json = json.loads(resp_data.decode("utf-8"))
-                        if resp_json.get("status") == "ok":
-                            data_hex = resp_json.get("data")
-                            data_bytes = bytes.fromhex(data_hex)
-
-                            # Verifica a integridade do bloco via hash SHA-256
-                            calc_hash = hashlib.sha256(data_bytes).hexdigest()
-                            expected_hash = metadata["blocks"][i]["hash"]
-                            if calc_hash != expected_hash:
+                        # Se não houver mais peers disponíveis, limpamos a lista e tentamos novamente
+                        if not peer_for_block:
+                            if excluded_peers:  # Se já excluímos peers antes, devemos tentar novamente com eles
+                                excluded_peers.clear()
+                                self.app.displaySignal.emit(f"Nenhum outro peer disponível para o bloco {
+                                                            i}. Resetando tentativas...")
+                                continue
+                            else:
                                 if self.app:
-                                    self.app.displaySignal.emit(f"Checksum falhou para o bloco {i}, tentando novamente...")
-                                attempt += 1
-                                continue  # Não excluímos o peer, apenas tentamos novamente
-
-                            # Armazena o bloco com segurança
-                            with lock:
-                                blocks_data[i] = data_bytes
-
-                            if self.app:
-                                self.app.displaySignal.emit(
-                                    f"Bloco {i} baixado com sucesso."
-                                )
-                            return  # Sai da função se o bloco foi baixado com sucesso
-
-                    except Exception as ex:
-                        attempt += 1
-
-                        # Se houver outros peers disponíveis, excluímos esse da lista de tentativas
-                        if len(file_peers) > 1:
-                            excluded_peers.add(peer_for_block["peer_id"])
+                                    self.app.displaySignal.emit(
+                                        f"Nenhum peer disponível para o bloco {i}")
+                                return
 
                         if self.app:
                             self.app.displaySignal.emit(
-                                f"Tentativa {attempt}/{max_retries} falhou para o bloco {i}: {ex}"
+                                f"Conectando para baixar bloco {i} de {
+                                    peer_for_block['peer_id']} ({peer_for_block['ip']}:{peer_for_block['port']})..."
                             )
-                        time.sleep(2)  # Aguarda 2 segundos antes de tentar novamente
 
-                # Se todas as tentativas falharem
-                if self.app:
-                    self.app.displaySignal.emit(f"Erro crítico: Falha ao baixar o bloco {i} após {max_retries} tentativas.")
+                        try:
+                            conn = socket.create_connection(
+                                (peer_for_block["ip"], int(peer_for_block["port"])), timeout=10)
+                            req = {"type": "get_block",
+                                   "file_name": file_name, "block_index": i}
 
-            # Cria e inicia uma thread para cada bloco
-            for i in range(total_blocks):
-                t = threading.Thread(target=download_block, args=(i,))
-                threads.append(t)
-                t.start()
+                            conn.sendall(json.dumps(req).encode("utf-8"))
+                            resp_data = b""
 
-            # Aguarda o término de todas as threads
-            for t in threads:
-                t.join()
+                            while True:
+                                part = conn.recv(8192)
+                                if not part:
+                                    break
+                                resp_data += part
+
+                            conn.close()
+
+                            resp_json = json.loads(resp_data.decode("utf-8"))
+                            if resp_json.get("status") == "ok":
+                                data_hex = resp_json.get("data")
+                                data_bytes = bytes.fromhex(data_hex)
+
+                                # Verifica a integridade do bloco via hash SHA-256
+                                calc_hash = hashlib.sha256(
+                                    data_bytes).hexdigest()
+                                expected_hash = metadata["blocks"][i]["hash"]
+                                if calc_hash != expected_hash:
+                                    if self.app:
+                                        self.app.displaySignal.emit(f"Checksum falhou para o bloco {
+                                                                    i}, tentando novamente...")
+                                    attempt += 1
+                                    continue  # Não excluímos o peer, apenas tentamos novamente
+
+                                # Armazena o bloco com segurança
+                                with lock:
+                                    blocks_data[i] = data_bytes
+
+                                if self.app:
+                                    self.app.displaySignal.emit(
+                                        f"Bloco {i} baixado com sucesso."
+                                    )
+                                return  # Sai da função se o bloco foi baixado com sucesso
+
+                        except Exception as ex:
+                            attempt += 1
+
+                            # Se houver outros peers disponíveis, excluímos esse da lista de tentativas
+                            if len(file_peers) > 1:
+                                excluded_peers.add(peer_for_block["peer_id"])
+
+                            if self.app:
+                                self.app.displaySignal.emit(
+                                    f"Tentativa {
+                                        attempt}/{max_retries} falhou para o bloco {i}: {ex}"
+                                )
+                            # Aguarda 2 segundos antes de tentar novamente
+                            time.sleep(2)
+
+                    # Se todas as tentativas falharem
+                    if self.app:
+                        self.app.displaySignal.emit(f"Erro crítico: Falha ao baixar o bloco {
+                                                    i} após {max_retries} tentativas.")
+
+            with ThreadPoolExecutor(max_workers=self.max_connections) as executor:
+                # Cria todas as tarefas de download
+                futures = [executor.submit(download_block, i)
+                           for i in range(total_blocks)]
+
+                # Espera todas as tarefas completarem
+                for future in futures:
+                    future.result()
 
             end_time = time.time()
             total_time = end_time - start_time  # Tempo total de download
@@ -402,7 +414,8 @@ class Peer:
                     f.write(file_data)
 
                 # Calcula a velocidade média do download
-                avg_speed = (file_size_kb / total_time) if total_time > 0 else 0
+                avg_speed = (file_size_kb /
+                             total_time) if total_time > 0 else 0
 
                 if self.app:
                     self.app.displaySignal.emit(
@@ -457,7 +470,8 @@ class PeerApp(QMainWindow):
         connections_layout = QHBoxLayout()
         self.max_conn_input = QLineEdit()
         self.max_conn_input.setPlaceholderText("Máx. Conexões")
-        self.max_conn_input.setText(str(self.peer.max_connections))  # Valor inicial
+        self.max_conn_input.setText(
+            str(self.peer.max_connections))  # Valor inicial
         connections_layout.addWidget(QLabel("Máx. Conexões:"))
         connections_layout.addWidget(self.max_conn_input)
         self.set_max_conn_button = QPushButton("Definir")
@@ -534,12 +548,14 @@ class PeerApp(QMainWindow):
             self.update_status("Preencha o nome e a porta do Peer.")
 
     def set_max_connections(self):
+        """Versão modificada para usar o novo método do Peer"""
         try:
             max_conn = int(self.max_conn_input.text().strip())
             if max_conn < 1:
                 raise ValueError("O número mínimo de conexões deve ser 1.")
-            self.peer.max_connections = max_conn
-            self.update_status(f"Número máximo de conexões ajustado para {max_conn}.")
+            self.peer.set_max_connections(max_conn)
+            self.update_status(
+                f"Número máximo de conexões ajustado para {max_conn}.")
         except ValueError as e:
             self.update_status(f"Valor inválido para conexões: {e}")
 
