@@ -426,7 +426,7 @@ class PeerApp(QMainWindow):
         self.initUI()
 
     def initUI(self):
-        self.setWindowTitle("P2P File Sharing")
+        self.setWindowTitle("TR2 - P2P")
         self.setGeometry(100, 100, 750, 700)
         main_layout = QVBoxLayout()
 
