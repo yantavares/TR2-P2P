@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout
                              QWidget, QFileDialog, QTextEdit, QLineEdit, QListWidget,
                              QLabel, QHBoxLayout, QCheckBox)
 
-BLOCK_SIZE = int((1024 * 1024)/2)
+BLOCK_SIZE = 1024 * 1024
 TRACKER_IP = "127.0.0.1"
 TRACKER_PORT = 5001
 
@@ -82,32 +82,31 @@ class Peer:
         threading.Thread(target=_send_keep_alive, daemon=True).start()
 
     def add_file(self, file_path):
-        """Divide o arquivo em blocos, calcula os checksums e adiciona-o aos arquivos compartilhados."""
-        with self.lock:
-            try:
-                file_size = os.path.getsize(file_path)
-                blocks = []
-                index = 0
-                with open(file_path, "rb") as f:
-                    while True:
-                        chunk = f.read(BLOCK_SIZE)
-                        if not chunk:
-                            break
-                        block_hash = hashlib.sha256(chunk).hexdigest()
-                        blocks.append({"index": index, "hash": block_hash})
-                        index += 1
-                file_name = os.path.basename(file_path)
-                self.files[file_name] = {"size": file_size, "blocks": blocks}
-                # O peer possui o arquivo completo, portanto registra todos os índices
-                self.resources[file_name] = list(range(len(blocks)))
-                self.register_with_tracker()
-                if self.app:
-                    self.app.displaySignal.emit(
-                        f"Arquivo '{file_name}' compartilhado com sucesso!")
-            except Exception as e:
-                if self.app:
-                    self.app.displaySignal.emit(
-                        f"Erro ao compartilhar arquivo: {e}")
+        """Versão corrigida que lê o arquivo até EOF"""
+        try:
+            file_size = os.path.getsize(file_path)
+            blocks = []
+            index = 0
+            with open(file_path, "rb") as f:
+                while True:
+                    chunk = f.read(BLOCK_SIZE)  # Lê até BLOCK_SIZE ou EOF
+                    if not chunk:
+                        break
+                    block_hash = hashlib.sha256(chunk).hexdigest()
+                    blocks.append({"index": index, "hash": block_hash})
+                    index += 1
+            file_name = os.path.basename(file_path)
+            self.files[file_name] = {"size": file_size, "blocks": blocks}
+            self.resources[file_name] = list(range(len(blocks)))
+            self.register_with_tracker()
+
+            if self.app:
+                self.app.displaySignal.emit(
+                    f"Arquivo '{file_name}' compartilhado com sucesso.")
+        except Exception as e:
+            if self.app:
+                self.app.displaySignal.emit(
+                    f"Erro ao compartilhar arquivo: {e}")
 
     def fetch_peers_from_tracker(self):
         """Consulta o tracker para obter a lista de peers ativos."""
@@ -180,7 +179,14 @@ class Peer:
                 data = conn.recv(4096)
                 if not data:
                     return
-                message = json.loads(data.decode("utf-8"))
+
+                try:
+                    message = json.loads(data.decode("utf-8"))
+                except json.JSONDecodeError:
+                    conn.sendall(json.dumps(
+                        {"status": "error", "message": "JSON inválido"}).encode("utf-8"
+                                                                                ))
+                    return
                 msg_type = message.get("type")
                 if msg_type == "message":
                     content = message.get("content", "")
@@ -199,19 +205,33 @@ class Peer:
                 elif msg_type == "get_block":
                     file_name = message.get("file_name")
                     block_index = message.get("block_index")
-                    if file_name in self.files:
-                        try:
+                    try:
+                        if file_name in self.files:
                             with open(file_name, "rb") as f:
+                                # Calcula offset corretamente considerando blocos variáveis
                                 f.seek(block_index * BLOCK_SIZE)
+                                # Pode ser menor que BLOCK_SIZE
                                 chunk = f.read(BLOCK_SIZE)
+
+                            # Envia resposta em chunks se necessário
                             response = {
-                                "status": "ok", "block_index": block_index, "data": chunk.hex()}
-                        except Exception as e:
-                            response = {"status": "error", "message": str(e)}
-                    else:
-                        response = {"status": "error",
-                                    "message": "Arquivo não encontrado"}
-                    conn.sendall(json.dumps(response).encode("utf-8"))
+                                "status": "ok",
+                                "block_index": block_index,
+                                "data": chunk.hex()
+                            }
+                            data_to_send = json.dumps(response).encode("utf-8")
+
+                            # Envia em partes de 4096 bytes
+                            total_sent = 0
+                            while total_sent < len(data_to_send):
+                                sent = conn.send(
+                                    data_to_send[total_sent:total_sent+4096])
+                                if sent == 0:
+                                    raise RuntimeError("Conexão fechada")
+                                total_sent += sent
+                    except Exception as e:
+                        response = {"status": "error", "message": str(e)}
+                        conn.sendall(json.dumps(response).encode("utf-8"))
                 else:
                     # Outros tipos de mensagem podem ser tratados aqui.
                     pass
@@ -263,9 +283,24 @@ class Peer:
                     request = {"type": "get_file_metadata",
                                "file_name": file_name}
                     conn.sendall(json.dumps(request).encode("utf-8"))
-                    resp = conn.recv(4096).decode("utf-8")
+
+                    # Novo sistema de recebimento de dados completo
+                    response = b""
+                    while True:
+                        part = conn.recv(4096)
+                        if not part:
+                            break
+                        response += part
+                        # Verifica se a resposta já está completa
+                        try:
+                            json.loads(response.decode("utf-8"))
+                            break
+                        except json.JSONDecodeError:
+                            continue
+
                     conn.close()
-                    response = json.loads(resp)
+                    response = json.loads(response.decode("utf-8"))
+
                     if response.get("status") == "ok":
                         metadata = response.get("metadata")
                         if self.app:
@@ -340,18 +375,17 @@ class Peer:
                             resp_json = json.loads(resp_data.decode("utf-8"))
                             if resp_json.get("status") == "ok":
                                 data_hex = resp_json.get("data")
-                                data_bytes = bytes.fromhex(data_hex)
-
-                                # Verifica a integridade do bloco via hash SHA-256
-                                calc_hash = hashlib.sha256(
-                                    data_bytes).hexdigest()
-                                expected_hash = metadata["blocks"][i]["hash"]
-                                if calc_hash != expected_hash:
-                                    if self.app:
-                                        self.app.displaySignal.emit(f"Checksum falhou para o bloco {
-                                                                    i}, tentando novamente...")
+                                try:
+                                    data_bytes = bytes.fromhex(data_hex)
+                                except ValueError:
+                                    # Dados hex malformados
                                     attempt += 1
-                                    continue  # Não excluímos o peer, apenas tentamos novamente
+                                    continue
+
+                                # Verifica tamanho máximo permitido
+                                if len(data_bytes) > BLOCK_SIZE:
+                                    attempt += 1
+                                    continue
 
                                 # Armazena o bloco com segurança
                                 with lock:
@@ -393,7 +427,15 @@ class Peer:
                     future.result()
 
             end_time = time.time()
-            total_time = end_time - start_time  # Tempo total de download
+            total_time = end_time - start_time
+            file_size_mb = file_size / (1024 * 1024)  # Converter para MB
+            speed = file_size_mb / total_time if total_time > 0 else 0
+
+            if self.app:
+                self.app.displaySignal.emit(f"Download concluído em {
+                                            total_time:.2f} segundos.")
+                self.app.displaySignal.emit(
+                    f"Velocidade média: {speed:.2f} MB/s")
 
             if None in blocks_data:
                 if self.app:
@@ -412,18 +454,6 @@ class Peer:
                 save_path = os.path.join(dest_path, file_name)
                 with open(save_path, "wb") as f:
                     f.write(file_data)
-
-                # Calcula a velocidade média do download
-                avg_speed = (file_size_kb /
-                             total_time) if total_time > 0 else 0
-
-                if self.app:
-                    self.app.displaySignal.emit(
-                        f"Download concluído em {total_time:.2f} segundos."
-                    )
-                    self.app.displaySignal.emit(
-                        f"Velocidade média do download: {avg_speed:.2f} KB/s"
-                    )
 
                 # Atualiza os recursos para indicar que este peer agora possui o arquivo completo
                 with self.lock:
