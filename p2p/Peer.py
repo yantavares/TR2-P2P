@@ -536,7 +536,7 @@ class PeerApp(QMainWindow):
             max_conn = int(self.max_conn_input.text().strip())
             if max_conn < 1:
                 raise ValueError("O número mínimo de conexões deve ser 1.")
-            if max_conn > 4 + self.peer.level:
+            if max_conn > 4 + self.peer.level - 1:
                 raise ValueError(
                     "O número máximo de conexões deve ser 4 + nível do Peer.")
             self.peer.set_max_connections(max_conn)
