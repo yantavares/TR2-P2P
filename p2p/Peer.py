@@ -287,20 +287,24 @@ class Peer:
         def _download():
             if self.app:
                 self.app.displaySignal.emit(
-                    f"Iniciando download do arquivo '{file_name}'...")
+                    f"Iniciando download do arquivo '{file_name}'..."
+                )
             file_peers = self.get_file_peers(file_name)
             if not file_peers:
                 if self.app:
                     self.app.displaySignal.emit(
-                        f"Nenhum peer possui o arquivo '{file_name}'")
+                        f"Nenhum peer possui o arquivo '{file_name}'"
+                    )
                 return
 
             metadata = None
+            # Tenta obter os metadados do arquivo de algum peer que o possua
             for peer in file_peers:
                 try:
                     if self.app:
                         self.app.displaySignal.emit(
-                            f"Tentando obter metadata de {peer['peer_id']} ({peer['ip']}:{peer['port']})...")
+                            f"Tentando obter metadata de {peer['peer_id']} ({peer['ip']}:{peer['port']})..."
+                        )
                     conn = socket.create_connection(
                         (peer["ip"], int(peer["port"])), timeout=10)
                     request = {"type": "get_file_metadata",
@@ -312,17 +316,21 @@ class Peer:
                         metadata = response.get("metadata")
                         if self.app:
                             self.app.displaySignal.emit(
-                                f"Metadata obtida de {peer['peer_id']}.")
+                                f"Metadata obtida de {peer['peer_id']}."
+                            )
                         break
                 except Exception as ex:
                     if self.app:
                         self.app.displaySignal.emit(
-                            f"Falha ao obter metadata de {peer['peer_id']}: {ex}")
+                            f"Falha ao obter metadata de {peer['peer_id']}: {ex}"
+                        )
                     continue
+
             if metadata is None:
                 if self.app:
                     self.app.displaySignal.emit(
-                        f"Não foi possível obter metadata para '{file_name}'")
+                        f"Não foi possível obter metadata para '{file_name}'"
+                    )
                 return
 
             total_blocks = len(metadata["blocks"])
@@ -343,12 +351,14 @@ class Peer:
                             excluded_peers.clear()
                             if self.app:
                                 self.app.displaySignal.emit(
-                                    f"Nenhum outro peer disponível para o bloco {i}. Resetando tentativas...")
+                                    f"Nenhum outro peer disponível para o bloco {i}. Resetando tentativas..."
+                                )
                             continue
                         else:
                             if self.app:
                                 self.app.displaySignal.emit(
-                                    f"Nenhum peer disponível para o bloco {i}")
+                                    f"Nenhum peer disponível para o bloco {i}"
+                                )
                             return
                     try:
                         conn = socket.create_connection(
@@ -363,22 +373,24 @@ class Peer:
                             blocks_data[i] = bytes.fromhex(data_hex)
                             if self.app:
                                 self.app.displaySignal.emit(
-                                    f"Bloco {i} baixado de {peer_for_block['peer_id']}.")
-                                time.sleep(0.1)
+                                    f"Bloco {i} baixado de {peer_for_block['peer_id']}."
+                                )
                             return
                         else:
                             attempt += 1
                             excluded_peers.add(peer_for_block["peer_id"])
                             if self.app:
                                 self.app.displaySignal.emit(
-                                    f"Tentativa {attempt}/{max_retries} falhou para o bloco {i}: {response.get('message')}")
+                                    f"Tentativa {attempt}/{max_retries} falhou para o bloco {i}: {response.get('message')}"
+                                )
                             time.sleep(2)
                     except Exception as ex:
                         attempt += 1
                         excluded_peers.add(peer_for_block["peer_id"])
                         if self.app:
                             self.app.displaySignal.emit(
-                                f"Erro na tentativa {attempt}/{max_retries} para o bloco {i}: {ex}")
+                                f"Erro na tentativa {attempt}/{max_retries} para o bloco {i}: {ex}"
+                            )
                         time.sleep(2)
 
             with ThreadPoolExecutor(max_workers=self.max_connections) as executor:
@@ -393,27 +405,34 @@ class Peer:
             if None in blocks_data:
                 if self.app:
                     self.app.displaySignal.emit(
-                        "Falha no download: alguns blocos não foram baixados")
+                        "Falha no download: alguns blocos não foram baixados"
+                    )
                 return
 
             file_data = b"".join(blocks_data)
             if len(file_data) != file_size:
                 if self.app:
                     self.app.displaySignal.emit(
-                        "Tamanho do arquivo incorreto após reassemblagem")
+                        "Tamanho do arquivo incorreto após reassemblagem"
+                    )
                 return
 
             try:
+                # Salva o arquivo baixado no diretório escolhido
                 save_path = os.path.join(dest_path, file_name)
                 with open(save_path, "wb") as f:
                     f.write(file_data)
+                # Atualiza os metadados para refletir o novo caminho (arquivo baixado)
+                downloaded_metadata = metadata.copy()
+                downloaded_metadata["path"] = save_path
                 with self.lock:
-                    self.files[file_name] = metadata
+                    self.files[file_name] = downloaded_metadata
                     self.resources[file_name] = list(range(total_blocks))
                 self.register_with_tracker()
                 if self.app:
                     self.app.displaySignal.emit(
-                        f"Download concluído em {total_time:.2f} segundos. Arquivo salvo em {save_path}")
+                        f"Download concluído em {total_time:.2f} segundos. Arquivo salvo em {save_path}"
+                    )
             except Exception as e:
                 if self.app:
                     self.app.displaySignal.emit(
