@@ -225,12 +225,17 @@ class Peer:
                             (json.dumps(error_msg) + "\n").encode("utf-8"))
                         continue
 
+                    user = message.get("user_id", str(addr))
+
+                    msg_rcv_header = addr if user == str(
+                        addr) else f'{user} ({addr[0]}:{addr[1]})'
+
                     msg_type = message.get("type")
                     if msg_type == "message":
                         content = message.get("content", "")
                         if self.app:
                             self.app.displaySignal.emit(
-                                f"Mensagem recebida de {addr}: {content}")
+                                f"{msg_rcv_header}: {content}")
                     elif msg_type == "get_file_metadata":
                         file_name = message.get("file_name")
                         if file_name in self.files:
@@ -603,7 +608,8 @@ class PeerApp(QMainWindow):
             if content:
                 try:
                     conn = socket.create_connection((peer_ip, int(peer_port)))
-                    msg = {"type": "message", "content": content}
+                    msg = {"type": "message", "content": content,
+                           "user_id": self.peer.peer_id}
                     conn.sendall(json.dumps(msg).encode("utf-8"))
                     conn.close()
                     self.update_status("Mensagem enviada com sucesso!")
