@@ -17,10 +17,9 @@ BLOCK_SIZE = 1024 * 1024
 TRACKER_IP = "127.0.0.1"
 TRACKER_PORT = 5001
 
-# Função auxiliar para receber uma mensagem JSON completa utilizando um delimitador.
-
 
 def recv_json(sock, delimiter=b"\n"):
+    """ Função auxiliar para receber uma mensagem JSON completa utilizando um delimitador."""
     buffer = b""
     while True:
         part = sock.recv(8192)
@@ -103,7 +102,7 @@ class Peer:
         threading.Thread(target=_send_keep_alive, daemon=True).start()
 
     def add_file(self, file_path):
-        """Reads the file in blocks, registers it, and updates XP and level."""
+        """Lê o arquivo em blocos, registra-o e atualiza XP e nível."""
         try:
             file_size = os.path.getsize(file_path)
             blocks = []
@@ -117,16 +116,15 @@ class Peer:
                     blocks.append({"index": index, "hash": block_hash})
                     index += 1
             file_name = os.path.basename(file_path)
-            # Store the full path along with file metadata
+            # Guarda o caminho completo junto com os metadados do arquivo
             self.files[file_name] = {"size": file_size,
                                      "blocks": blocks, "path": file_path}
             self.resources[file_name] = list(range(len(blocks)))
 
-            # Update XP: each block adds 1 XP.
+            # XP ganho é igual ao número de blocos do arquivo.
             xp_ganho = len(blocks)
             self.xp += xp_ganho
 
-            # Calculate new level: every 50 XP gives an extra level.
             novo_nivel = 1 + self.xp // self.level_threshold
             if novo_nivel > self.level:
                 self.level = novo_nivel
@@ -135,7 +133,6 @@ class Peer:
                     self.app.displaySignal.emit(
                         f"Nível atualizado: {self.level}. Máx. conexões agora: {self.max_connections}.")
 
-            # Re-register to update the tracker with new info.
             self.register_with_tracker()
 
             if self.app:
