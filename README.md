@@ -1,42 +1,79 @@
-# TR2-P2P
-Implementação de um Sistema P2P com Funcionalidades de Comunicação, Compartilhamento de Arquivos e Incentivo ao Uso Colaborativo da Rede 
+# P2P File Sharing System (TR2)
 
-## Descrição Geral 
+This repository contains a Peer-to-Peer (P2P) file sharing application developed in Python. The system enables users to share and download files in a distributed network. It uses a central tracker to manage active peers and available resources, while file transfers occur directly between peers using TCP connections.
 
-Este trabalho tem como objetivo implementar um sistema Peer-to-Peer (P2P) simplificado que permita: 
+## Features
 
-- Comunicação por chat entre peers. 
-- Busca e compartilhamento de arquivos (incluindo imagens, vídeos e documentos).
-- Transferência de arquivos com suporte a múltiplas conexões paralelas para melhorar a taxa de download. 
-- Uso de um mecanismo de incentivo que priorize peers mais colaborativos na rede. 
-- Os grupos (compostos por 2 ou 3 alunos) devem aplicar conceitos das camadas de aplicação, transporte, rede e enlace, desenvolvendo um sistema funcional durante o período do semestre. 
+- **P2P File Sharing:** Share and download files in a distributed environment.
+- **Central Tracker:** Manages the registration and status of active peers, as well as the list of available resources.
+- **Persistent and Parallel TCP Connections:** Supports downloading file blocks in parallel using a persistent TCP connection per peer group, reducing connection overhead.
+- **File Integrity:** Files are divided into fixed-size blocks (1 MB each) and each block is hashed using SHA-256 to ensure data integrity.
+- **Robust Error Handling:** Implements timeouts, retries, and exclusion of unresponsive peers.
+- **Graphical User Interface:** Built with PyQt5, providing an intuitive interface to connect to the network, share and download files, and communicate with peers.
+- **Incentive Mechanism:** A gamification system where users earn experience points (XP) for sharing file blocks. For every block shared, the user gains 1 XP. Once the user accumulates 50 XP, they level up. A higher level increases the number of simultaneous connections allowed (a level 1 user gets up to 4 connections, and each additional level adds one extra connection).
 
-## Funcionalidades
+## Getting Started
 
-- Chat entre peers: 
-- Comunicação direta entre dois peers conectados. 
-- Busca de arquivos na rede: 
-- Um peer deve ser capaz de buscar arquivos disponíveis a partir de metadados. 
-- Transferência de arquivos: 
-- Implementar envio e recebimento de arquivos diretamente entre peers. 
-- Divisão de arquivos em blocos para transferência em conexões paralelas (ex.: até N conexões simultâneas, onde N>2). Este tipo de mecanismo pode ser utilizado como forma de incentivo.  
-- Conexão a um tracker centralizado: 
-- O tracker é responsável por gerenciar a lista de peers ativos e permitir que os clientes descubram uns aos outros.  
-- Interface básica: 
-- Um cliente com interface simples para interagir com as funcionalidades descritas. 
- 
+### Prerequisites
 
-## Mecanismo de Incentivo 
+- Python 3.x
+- PyQt5 library
 
-O trabalho deve incluir um mecanismo de incentivo que priorize peers mais colaborativos na rede. Esse mecanismo deve ser baseado em uma métrica definida pelo grupo, tais como: 
+You can install PyQt5 using pip:
 
-- Volume de compartilhamento: 
-- Priorizar peers que compartilhem mais arquivos ou dados na rede. 
-- Tempo de uso:
-- Peers com mais tempo conectados podem receber maior prioridade. 
-- Comportamento colaborativo: 
-- Incentivar peers que frequentemente respondem a pedidos de outros usuários. 
-- Métrica híbrida (sugerido): 
-- Combinação de critérios, como volume compartilhado e tempo de conexão, para calcular uma pontuação de incentivo. 
+```bash
+pip install PyQt5
+```
 
-O incentivo pode ser uma taxa maior de download (ou seja, se temos N conexões paralelas, um peer com maior incentivo poderia ter maiores taxas de download). Ou, de outra forma, peers com menor incentivo teriam uma taxa de download limitada em M Kbps por exemplo.  
+### Installation
+
+1. **Clone the repository:**
+
+   ```bash
+   git clone https://github.com/yantavares/TR2-P2P.git
+   cd p2p-file-sharing
+   ```
+
+2. **(Optional) Create and activate a virtual environment:**
+
+   ```bash
+   python -m venv venv
+   source venv/bin/activate   # On Windows: venv\Scripts\activate
+   ```
+
+### Usage
+
+1. **Run the Tracker:**
+
+   Start the tracker:
+
+   ```bash
+   python Tracker.py
+   ```
+
+2. **Run a Peer Instance:**
+
+   Start the peer application:
+
+   ```bash
+   python Peer.py
+   ```
+
+   The graphical interface will launch. Enter your peer ID and port, then connect to the network. Use the interface to share files, list peers, download files, and send messages.
+
+3. **Earning XP and Leveling Up:**
+
+   - Share files using the interface. Each file is divided into 1 MB blocks.
+   - For each block shared, you gain 1 XP.
+   - When you accumulate 50 XP, you level up.
+   - Your level is displayed next to your peer ID, and the maximum number of simultaneous connections increases by 1 for each level above 1 (starting at 4 for level 1).
+
+## Code Structure
+
+- **peer.py:** Contains the main Peer class that handles network registration, file sharing, downloading (using persistent connections for multiple blocks), and the XP/level incentive mechanism.
+- **tracker.py:** Contains the Tracker class that manages active peers, resource availability, and handles client requests.
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
