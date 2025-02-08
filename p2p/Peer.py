@@ -103,7 +103,7 @@ class Peer:
         threading.Thread(target=_send_keep_alive, daemon=True).start()
 
     def add_file(self, file_path):
-        """Lê o arquivo em blocos, registra-o e atualiza XP e nível."""
+        """Reads the file in blocks, registers it, and updates XP and level."""
         try:
             file_size = os.path.getsize(file_path)
             blocks = []
@@ -117,14 +117,16 @@ class Peer:
                     blocks.append({"index": index, "hash": block_hash})
                     index += 1
             file_name = os.path.basename(file_path)
-            self.files[file_name] = {"size": file_size, "blocks": blocks}
+            # Store the full path along with file metadata
+            self.files[file_name] = {"size": file_size,
+                                     "blocks": blocks, "path": file_path}
             self.resources[file_name] = list(range(len(blocks)))
 
-            # Atualiza XP: cada bloco adicionado confere 1 ponto de XP.
+            # Update XP: each block adds 1 XP.
             xp_ganho = len(blocks)
             self.xp += xp_ganho
 
-            # Calcula o novo nível: cada 100 XP equivale a um nível extra.
+            # Calculate new level: every 50 XP gives an extra level.
             novo_nivel = 1 + self.xp // self.level_threshold
             if novo_nivel > self.level:
                 self.level = novo_nivel
@@ -133,7 +135,7 @@ class Peer:
                     self.app.displaySignal.emit(
                         f"Nível atualizado: {self.level}. Máx. conexões agora: {self.max_connections}.")
 
-            # Re-registra para atualizar as informações no tracker.
+            # Re-register to update the tracker with new info.
             self.register_with_tracker()
 
             if self.app:
@@ -251,7 +253,9 @@ class Peer:
                         block_index = message.get("block_index")
                         try:
                             if file_name in self.files:
-                                with open(file_name, "rb") as f:
+                                # Use the stored full path to open the file.
+                                file_path = self.files[file_name]["path"]
+                                with open(file_path, "rb") as f:
                                     f.seek(block_index * BLOCK_SIZE)
                                     chunk = f.read(BLOCK_SIZE)
                                 response = {
