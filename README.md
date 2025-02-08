@@ -1,5 +1,14 @@
 # P2P File Sharing System (TR2)
 
+```
+  __         ________                  ________         
+_/  |________\_____  \          ______ \_____  \______  
+\   __\_  __ \/  ____/   ______ \____ \ /  ____/\____ \ 
+ |  |  |  | \/       \  /_____/ |  |_> >       \|  |_> >
+ |__|  |__|  \_______ \         |   __/\_______ \   __/ 
+                     \/         |__|           \/__|    
+```
+
 This repository contains a Peer-to-Peer (P2P) file sharing application developed in Python. The system enables users to share and download files in a distributed network. It uses a central tracker to manage active peers and available resources, while file transfers occur directly between peers using TCP connections.
 
 ## Features
